@@ -204,6 +204,20 @@ input[type="range"] {
   accent-color: #58a6ff;
 }
 
+.gain-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.gain-value {
+  font-size: 13px;
+  color: #e6edf3;
+  white-space: nowrap;
+  min-width: 52px;
+  text-align: right;
+}
+
 button {
   background: #21262d;
   color: #e6edf3;
@@ -276,6 +290,15 @@ button:disabled {
   border: 1px solid #30363d;
   border-radius: 6px;
   image-rendering: pixelated;
+}
+
+.spectrum {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: #000;
+  border: 1px solid #30363d;
+  border-radius: 6px;
 }
 
 .waterfall-marker {

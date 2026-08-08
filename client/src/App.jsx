@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { AudioPlayer } from './audio.js';
-import Waterfall from './Waterfall.jsx';
+import SpectrumAnalyzer from './SpectrumAnalyzer.jsx';
 
 const STORAGE_KEY = 'sdr-fm-stations';
 
@@ -58,7 +58,7 @@ export default function App() {
 
   const wsRef = useRef(null);
   const playerRef = useRef(null);
-  const waterfallRef = useRef(null);
+  const spectrumRef = useRef(null);
   const playingRef = useRef(false);
 
   useEffect(() => {
@@ -162,7 +162,7 @@ export default function App() {
             playerRef.current && playerRef.current.push(int16);
           } else if (kind === 2) {
             const nb = bytes[1] | (bytes[2] << 8);
-            waterfallRef.current && waterfallRef.current.push(bytes.subarray(3, 3 + nb));
+            spectrumRef.current && spectrumRef.current.push(bytes.subarray(3, 3 + nb));
           }
         }
       };
@@ -200,7 +200,7 @@ export default function App() {
       setDabInfo(null);
       setDabSlide(null);
       if (mode === 'dab') setDabServices([]);
-      if (waterfallRef.current) waterfallRef.current.clear();
+      if (spectrumRef.current) spectrumRef.current.clear();
     } catch (err) {
       setStatus(`Error: ${err.message}`);
       setBusy(false);
@@ -215,7 +215,7 @@ export default function App() {
     setStatus('Stopped');
     setDabInfo(null);
     setDabSlide(null);
-    if (waterfallRef.current) waterfallRef.current.clear();
+    if (spectrumRef.current) spectrumRef.current.clear();
   };
 
   const tuneFreq = (mhz, m, service) => {
@@ -230,7 +230,7 @@ export default function App() {
       setDabInfo(null);
       setDabSlide(null);
     } else {
-      if (waterfallRef.current) waterfallRef.current.clear();
+      if (spectrumRef.current) spectrumRef.current.clear();
     }
   };
 
@@ -264,11 +264,9 @@ export default function App() {
   };
 
   const changeGain = (e) => {
-    setGain(e.target.value);
-    if (playingRef.current) {
-      const g = e.target.value.trim() === '' ? undefined : Number(e.target.value);
-      send({ op: 'gain', gain: g });
-    }
+    const g = Number(e.target.value);
+    setGain(String(g));
+    if (playingRef.current) send({ op: 'gain', gain: g });
   };
 
   const changeVolume = (e) => {
@@ -334,7 +332,17 @@ export default function App() {
 
           <label>
             RF gain (dB)
-            <input value={gain} onChange={changeGain} placeholder="40" inputMode="decimal" />
+            <div className="gain-row">
+              <input
+                type="range"
+                min="0"
+                max="60"
+                step="1"
+                value={gain === '' ? 40 : Number(gain)}
+                onChange={changeGain}
+              />
+              <span className="gain-value">{gain === '' ? '40' : gain} dB</span>
+            </div>
           </label>
 
           {mode === 'fm' ? (
@@ -358,11 +366,13 @@ export default function App() {
                 Station
                 <select value={dabService} onChange={changeDabService} disabled={!dabServices.length}>
                   <option value="">First station found</option>
-                  {dabServices.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
+                  {[...dabServices]
+                    .sort((a, b) => a.localeCompare(b))
+                    .map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
                 </select>
               </label>
             </>
@@ -423,7 +433,7 @@ export default function App() {
                 Spectrum {centerHz ? `±${(span / 2 / 1e6).toFixed(2)} MHz around ${fmtMHz(centerHz)}` : '—'}
               </div>
               <div className="waterfall-canvas">
-                <Waterfall ref={waterfallRef} bins={bins} height={160} />
+                <SpectrumAnalyzer ref={spectrumRef} bins={bins} height={160} />
                 {centerHz && <div className="waterfall-marker" />}
               </div>
               <div className="waterfall-axis">
