@@ -105,6 +105,7 @@ wss.on('connection', (ws) => {
       const port = Number(msg.port || DEFAULT_PORT);
       const gain = msg.gain !== undefined && msg.gain !== '' ? Number(msg.gain) : DEFAULT_GAIN;
       const mode = msg.mode || 'fm';
+      const service = msg.service !== undefined && msg.service !== '' ? String(msg.service) : null;
       if (!Number.isFinite(freq) || freq <= 0) return;
       try {
         if (
@@ -114,9 +115,9 @@ wss.on('connection', (ws) => {
           manager.mode !== mode ||
           !manager.connected
         ) {
-          await manager.start({ mode, host, port, freq, gain });
+          await manager.start({ mode, host, port, freq, gain, service });
         } else {
-          manager.tune(freq);
+          manager.tune(freq, service);
           manager.setGain(gain);
         }
       } catch (err) {

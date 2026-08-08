@@ -46,6 +46,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [stats, setStats] = useState({ signal: 0, audio: 0 });
   const [dabInfo, setDabInfo] = useState(null);
+  const [dabServices, setDabServices] = useState([]);
+  const [dabService, setDabService] = useState('');
   const [presets, setPresets] = useState([]);
   const [newName, setNewName] = useState('');
   const [span, setSpan] = useState(288_000);
@@ -125,6 +127,8 @@ export default function App() {
                 ensemble: msg.ensemble || null,
                 snr: msg.snr != null ? msg.snr : null,
               });
+              if (Array.isArray(msg.services)) setDabServices(msg.services);
+              if (playerRef.current) playerRef.current.setRate(msg.rate || 48000);
               if (msg.connected) setStats({ signal: msg.signal || 0, audio: msg.audio || 0 });
               setStatus(
                 msg.connected
@@ -182,12 +186,14 @@ export default function App() {
         host,
         port: parseInt(port, 10),
         gain: gain.trim() === '' ? undefined : Number(gain),
+        service: mode === 'dab' ? dabService || undefined : undefined,
       });
       player.start();
       playingRef.current = true;
       setPlaying(true);
       setStatus('Tuning…');
       setDabInfo(null);
+      if (mode === 'dab') setDabServices([]);
       if (waterfallRef.current) waterfallRef.current.clear();
     } catch (err) {
       setStatus(`Error: ${err.message}`);
@@ -205,12 +211,13 @@ export default function App() {
     if (waterfallRef.current) waterfallRef.current.clear();
   };
 
-  const tuneFreq = (mhz, m) => {
+  const tuneFreq = (mhz, m, service) => {
     const m2 = m || mode;
     send({
       op: 'tune',
       mode: m2,
       freq: Math.round(parseFloat(mhz) * 1e6),
+      service: service || undefined,
     });
     if (m2 === 'dab') {
       setDabInfo(null);
@@ -229,14 +236,22 @@ export default function App() {
     const ch = DAB_CHANNELS.find(([n]) => n === name);
     if (!ch) return;
     setDabFreq(ch[1].toFixed(3));
+    setDabService('');
+    setDabServices([]);
     if (playingRef.current && mode === 'dab') tuneFreq(ch[1], 'dab');
+  };
+
+  const changeDabService = (e) => {
+    const label = e.target.value;
+    setDabService(label);
+    if (playingRef.current && mode === 'dab') tuneFreq(dabFreq, 'dab', label);
   };
 
   const changeMode = (m) => {
     if (mode === m) return;
     setMode(m);
     if (playingRef.current) {
-      tuneFreq(m === 'dab' ? dabFreq : freq, m);
+      tuneFreq(m === 'dab' ? dabFreq : freq, m, m === 'dab' ? dabService : undefined);
     }
   };
 
@@ -313,16 +328,29 @@ export default function App() {
           <input value={freq} onChange={changeFreq} placeholder="95.1" inputMode="decimal" />
         </label>
       ) : (
-        <label>
-          DAB channel
-          <select value={dabChannel} onChange={changeDabChannel}>
-            {DAB_CHANNELS.map(([name, mhz]) => (
-              <option key={name} value={name}>
-                {name} — {mhz.toFixed(3)} MHz
-              </option>
-            ))}
-          </select>
-        </label>
+        <>
+          <label>
+            DAB channel
+            <select value={dabChannel} onChange={changeDabChannel}>
+              {DAB_CHANNELS.map(([name, mhz]) => (
+                <option key={name} value={name}>
+                  {name} — {mhz.toFixed(3)} MHz
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Station
+            <select value={dabService} onChange={changeDabService} disabled={!dabServices.length}>
+              <option value="">First station found</option>
+              {dabServices.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </label>
+        </>
       )}
 
       <label>

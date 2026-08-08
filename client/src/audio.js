@@ -6,6 +6,7 @@ export class AudioPlayer {
     this.gain = null;
     this.nextTime = 0;
     this.playing = false;
+    this.rate = TARGET_SAMPLE_RATE;
   }
 
   async init() {
@@ -21,6 +22,10 @@ export class AudioPlayer {
     await this.ctx.resume();
   }
 
+  setRate(rate) {
+    if (Number.isFinite(rate) && rate > 0) this.rate = rate;
+  }
+
   start() {
     if (!this.ctx) return;
     this.playing = true;
@@ -28,9 +33,9 @@ export class AudioPlayer {
   }
 
   push(pcm) {
-    if (!this.playing || !this.ctx) return;
+    if (!this.playing || !this.ctx || pcm.length === 0) return;
     const ctx = this.ctx;
-    const buf = ctx.createBuffer(1, pcm.length, TARGET_SAMPLE_RATE);
+    const buf = ctx.createBuffer(1, pcm.length, this.rate);
     const ch = buf.getChannelData(0);
     for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
     const src = ctx.createBufferSource();

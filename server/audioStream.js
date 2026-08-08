@@ -25,7 +25,7 @@ export class AudioStreamManager extends EventEmitter {
     this.onPcm = null;
   }
 
-  async start({ mode = 'fm', host, port, freq, gain = null }) {
+  async start({ mode = 'fm', host, port, freq, gain = null, service = null }) {
     if (this.running) this.stop();
     this.mode = mode;
     this.host = host;
@@ -37,7 +37,7 @@ export class AudioStreamManager extends EventEmitter {
 
     if (mode === 'dab') {
       const dab = this.dab;
-      dab.start({ host, port, freqHz: freq, gain: gain ?? 40 });
+      dab.start({ host, port, freqHz: freq, gain: gain ?? 40, service });
       dab.onPcm = (pcm) => {
         this.stats.audio = this._rms(pcm);
         this.connected = true;
@@ -98,7 +98,7 @@ export class AudioStreamManager extends EventEmitter {
       if (!this.dab.running) return;
       this.gain = gain;
       this.dab.stop();
-      this.dab.start({ host: this.host, port: this.port, freqHz: this.freq, gain: gain ?? 40 });
+      this.dab.start({ host: this.host, port: this.port, freqHz: this.freq, gain: gain ?? 40, service: this.dab.service });
       this.connected = this.dab.running;
       this.emit('status', this.status());
       return;
@@ -109,12 +109,12 @@ export class AudioStreamManager extends EventEmitter {
     this.emit('status', this.status());
   }
 
-  tune(freq) {
+  tune(freq, service = null) {
     this.freq = freq;
     this.stats = { signal: 0, audio: 0 };
     if (this.mode === 'dab') {
       if (this.dab.running) {
-        this.dab.start({ host: this.host, port: this.port, freqHz: freq, gain: this.gain ?? 40 });
+        this.dab.start({ host: this.host, port: this.port, freqHz: freq, gain: this.gain ?? 40, service });
         this.connected = this.dab.running;
       }
     } else if (this.rtl && this.connected) {
@@ -148,6 +148,8 @@ export class AudioStreamManager extends EventEmitter {
       service: this.mode === 'dab' ? this.dab.service : null,
       ensemble: this.mode === 'dab' ? this.dab.ensemble : null,
       snr: this.mode === 'dab' ? this.dab.snr : null,
+      services: this.mode === 'dab' ? this.dab.services : [],
+      rate: this.mode === 'dab' ? this.dab.rate : null,
       signal: this.stats.signal,
       audio: this.stats.audio,
     };

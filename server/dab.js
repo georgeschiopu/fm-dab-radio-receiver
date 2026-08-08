@@ -58,7 +58,12 @@ export class DabReceiver {
     this.service = null;
     this.ensemble = null;
     this.snr = null;
+    this.services = [];
+    this.rate = null;
+    this.channels = null;
+    this.float32 = null;
     this._pcmBuf = Buffer.alloc(0);
+    this._channelKey = null;
   }
 
   status() {
@@ -70,26 +75,38 @@ export class DabReceiver {
       service: this.service,
       ensemble: this.ensemble,
       snr: this.snr,
+      services: this.services,
+      rate: this.rate,
     };
   }
 
-  start({ host, port, freqHz, gain = 40 }) {
+  start({ host, port, freqHz, gain = 40, service = null }) {
     this.stop();
     this.running = true;
     this.freq = freqHz;
     this.channel = channelBlockForFreq(freqHz);
     this.gain = gain;
-    this.service = null;
+    this.service = service;
     this.ensemble = null;
     this.snr = null;
     this._pcmBuf = Buffer.alloc(0);
+    this._resetFormat();
 
-    // eti-cmdline-rtl_tcp: IQ over rtl_tcp -> ETI-NI frames on stdout
-    const etiArgs = ['-H', host, '-I', String(port), '-B', 'BAND_III', '-C', this.channel, '-G', String(gain)];
+    const channelKey = `${host}:${port}:${this.channel}`;
+    if (channelKey !== this._channelKey) {
+      this._channelKey = channelKey;
+      this.services = [];
+    }
+
+    // eti-cmdline-rtl_tcp: IQ over rtl_tcp -> ETI-NI frames on stdout.
+    // -Q forces manual tuner gain in eti-stuff's rtl_tcp reader, so the
+    // requested -G value is actually applied instead of auto gain.
+    const etiArgs = ['-H', host, '-I', String(port), '-B', 'BAND_III', '-C', this.channel, '-G', String(gain), '-Q'];
     const eti = spawn(this.etiBin, etiArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
     this.eti = eti;
 
     eti.stderr.on('data', (d) => {
+      if (this.eti !== eti) return;
       for (const line of String(d).split('\n')) {
         const clean = stripAnsi(line);
         const m = clean.match(/estimated snr:\s*(\d+)/);
@@ -97,49 +114,95 @@ export class DabReceiver {
       }
       this._info(`eti: ${stripAnsi(String(d)).slice(0, 200)}`);
     });
-    eti.on('error', (err) => this._info(`eti-cmdline: ${err.message}`));
-    eti.on('exit', (code) => this._onExit('eti-cmdline', code));
+    eti.on('error', (err) => {
+      if (this.eti === eti) this._info(`eti-cmdline: ${err.message}`);
+    });
+    eti.on('exit', (code) => this._onExit(eti, 'eti-cmdline', code));
 
-    // dablin: ETI -> PCM (float32 stereo 48k) on stdout
-    const dablin = spawn(this.dablinBin, ['-p', '-1'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    // dablin: ETI -> PCM on stdout. -1 plays the first service found,
+    // -l <label> plays a specific station chosen by the user.
+    const dablinArgs = service ? ['-p', '-l', service] : ['-p', '-1'];
+    const dablin = spawn(this.dablinBin, dablinArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
     this.dablin = dablin;
 
     dablin.stderr.on('data', (d) => {
+      if (this.dablin !== dablin) return;
       for (const line of String(d).split('\n')) {
         const clean = stripAnsi(line);
+        const fm = clean.match(/PCMOutput: format set; samplerate: (\d+), channels: (\d+)(?:, output: ([\w ]+))?/);
+        if (fm) this._setFormat(Number(fm[1]), Number(fm[2]), fm[3] ? fm[3].startsWith('32bit float') : true);
         const sl = clean.match(/service label '([^']+)'/);
-        if (sl) this.service = sl[1];
+        if (sl) this._addService(sl[1]);
         const el = clean.match(/ensemble label '([^']+)'/);
         if (el) this.ensemble = el[1];
       }
     });
-    dablin.on('error', (err) => this._info(`dablin: ${err.message}`));
-    dablin.on('exit', (code) => this._onExit('dablin', code));
+    dablin.on('error', (err) => {
+      if (this.dablin === dablin) this._info(`dablin: ${err.message}`);
+    });
+    dablin.on('exit', (code) => this._onExit(dablin, 'dablin', code));
 
     eti.stdout.pipe(dablin.stdin);
-    dablin.stdout.on('data', (c) => this._onPcm(c));
+    dablin.stdout.on('data', (c) => {
+      if (this.dablin !== dablin) return;
+      this._onPcm(c);
+    });
+  }
+
+  _addService(label) {
+    if (this.services.includes(label)) return;
+    this.services.push(label);
+    if (!this.service) this.service = label;
+  }
+
+  _resetFormat() {
+    this.rate = null;
+    this.channels = null;
+    this.float32 = null;
+  }
+
+  _setFormat(rate, channels, float32) {
+    if (this.rate === rate && this.channels === channels && this.float32 === float32) return;
+    this.rate = rate;
+    this.channels = channels;
+    this.float32 = float32;
+    this._pcmBuf = Buffer.alloc(0);
+    this._info(`pcm format: ${rate} Hz, ${channels} ch`);
   }
 
   _onPcm(chunk) {
     if (!this.onPcm) return;
+    if (this.rate === null || this.channels === null) {
+      this._pcmBuf = Buffer.concat([this._pcmBuf, chunk]);
+      if (this._pcmBuf.length > 1024 * 1024) this._pcmBuf = Buffer.alloc(0);
+      return;
+    }
     this._pcmBuf = Buffer.concat([this._pcmBuf, chunk]);
-    const frame = 8; // 2 ch * float32
+    const { float32, channels } = this;
+    const bytesPerSample = float32 ? 4 : 2;
+    const frame = channels * bytesPerSample;
     const usable = this._pcmBuf.length - (this._pcmBuf.length % frame);
     if (usable === 0) return;
     const out = Buffer.allocUnsafe((usable / frame) * 2);
     for (let i = 0, o = 0; i < usable; i += frame, o += 2) {
-      const l = this._pcmBuf.readFloatLE(i);
-      const r = this._pcmBuf.readFloatLE(i + 4);
-      const m = (l + r) * 0.5;
+      let sum = 0;
+      for (let c = 0; c < channels; c++) {
+        const off = i + c * bytesPerSample;
+        const v = float32 ? this._pcmBuf.readFloatLE(off) : this._pcmBuf.readInt16LE(off) / 32768;
+        sum += v;
+      }
+      const m = sum / channels;
       let v = Math.round(m * 32767);
       v = v < -32768 ? -32768 : v > 32767 ? 32767 : v;
       out.writeInt16LE(v, o);
     }
     this._pcmBuf = this._pcmBuf.subarray(usable);
-    this.onPcm(new Int16Array(out.buffer, out.byteOffset, out.byteLength / 2));
+    this.onPcm(new Int16Array(out.buffer, out.byteOffset, out.byteLength / 2), this.rate);
   }
 
-  _onExit(name, code) {
+  _onExit(child, name, code) {
+    const current = name === 'eti-cmdline' ? this.eti : this.dablin;
+    if (current !== child) return;
     this.running = false;
     this._info(`${name} exited (${code})`);
   }

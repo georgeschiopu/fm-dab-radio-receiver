@@ -7,7 +7,7 @@ The Node.js backend demodulates FM IQ samples in-process and decodes DAB via an 
 ## Features
 
 - **FM mode** — in-process FFT-based FM demodulator (288 kHz sample rate), signal + audio meters, live spectrum waterfall.
-- **DAB mode** — full ETI decode chain (`eti-cmdline-rtl_tcp` → `dablin`) producing 48 kHz audio; live ensemble name, playing service and SNR on a DAB channel selector (5A–13F).
+- **DAB mode** — full ETI decode chain (`eti-cmdline-rtl_tcp` → `dablin`) producing 48 kHz audio; live ensemble name, playing service and SNR on a DAB channel selector (5A–13F), plus a **Station dropdown** to pick a specific service from the tuned ensemble (or "first station found").
 - **Presets** — save/load stations in the browser (localStorage).
 - **Remote SDR** — works with any `rtl_tcp` server on your network (or localhost).
 
@@ -95,7 +95,7 @@ Runs offline unit tests against a fake rtl_tcp server (protocol + FM demod + spe
 ## How it works
 
 - **FM**: the backend connects to rtl_tcp at 288 kS/s, demodulates FM with a zero-IF FFT pipeline (120 Hz bins), and streams mono 48 kHz int16 PCM over a WebSocket.
-- **DAB**: the backend runs `eti-cmdline-rtl_tcp -H host -C <channel>` (rtl_tcp at 2.048 MS/s) and pipes ETI frames into `dablin -p -1`, which emits float32 stereo PCM; the server downmixes to mono int16.
+- **DAB**: the backend runs `eti-cmdline-rtl_tcp -H host -C <channel>` (rtl_tcp at 2.048 MS/s) and pipes ETI frames into `dablin` (PCM to stdout), which emits the audio at the service's native rate/format (48/32/24 kHz, mono/stereo, float32 or int16); the server downmixes to mono int16 and the client plays it at the reported rate. `-l <label>` selects a specific station from the ensemble's FIC listing.
 - The client uses a Web Audio `AudioContext` at 48 kHz for gapless playback and renders spectrum lines on a canvas waterfall.
 
 ### WebSocket protocol
