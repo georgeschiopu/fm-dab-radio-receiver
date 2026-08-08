@@ -1,0 +1,123 @@
+# FM / DAB Radio Receiver
+
+A lightweight web-based radio receiver for **broadcast FM** and **DAB/DAB+** (digital radio) fed by a remote [rtl_tcp](https://github.com/keenerd/rtl-sdr-blog) SDR server.
+
+The Node.js backend demodulates FM IQ samples in-process and decodes DAB via an `eti-cmdline-rtl_tcp | dablin` pipeline. A small React client streams live audio and shows a real-time spectrum waterfall (FM) or the current DAB ensemble/service (DAB).
+
+## Features
+
+- **FM mode** — in-process FFT-based FM demodulator (288 kHz sample rate), signal + audio meters, live spectrum waterfall.
+- **DAB mode** — full ETI decode chain (`eti-cmdline-rtl_tcp` → `dablin`) producing 48 kHz audio; live ensemble name, playing service and SNR on a DAB channel selector (5A–13F).
+- **Presets** — save/load stations in the browser (localStorage).
+- **Remote SDR** — works with any `rtl_tcp` server on your network (or localhost).
+
+## Prerequisites
+
+- **Docker** (with `docker compose`) — for the recommended setup.
+- An **rtl_tcp server** streaming IQ from a DAB-capable RTL-SDR stick, e.g.:
+
+  ```sh
+  rtl_tcp -a 192.168.0.10   # listen on all interfaces, port 1234
+  ```
+
+  The server must be reachable from the receiver container.
+
+## Quick start (Docker)
+
+```sh
+git clone git@github.com:georgeschiopu/fm-dab-radio-receiver.git
+cd fm-dab-radio-receiver
+
+# point the container at your rtl_tcp host
+export RTL_TCP_HOST=192.168.0.10
+
+docker compose up -d --build
+```
+
+Open http://localhost:8080 , press **Play** and start listening.
+
+> The first build clones `JvanKatwijk/eti-stuff` and compiles `eti-cmdline-rtl_tcp` (a few minutes), then installs `dablin` — both are cached for later builds.
+
+## Configuration
+
+All options are environment variables (see `docker-compose.yml`):
+
+| Variable           | Default      | Description                                             |
+| ------------------ | ------------ | ------------------------------------------------------- |
+| `RTL_TCP_HOST`     | `192.168.0.6`| Host running the rtl_tcp server                         |
+| `RTL_TCP_PORT`     | `1234`       | rtl_tcp port                                            |
+| `RTL_TCP_FREQ`     | `95.1e6`     | Initial FM frequency (Hz)                               |
+| `RTL_TCP_GAIN`     | `40`         | Tuner gain in dB (auto gain overloads strong signals)   |
+| `RTL_TCP_MODE`     | `fm`         | Initial receiver mode: `fm` or `dab`                    |
+| `RTL_TCP_DAB_FREQ` | `216.928e6`  | Initial DAB ensemble frequency (Hz), mapped to a block  |
+| `PORT`             | `8080`       | Web UI port                                             |
+
+Example with a DAB default:
+
+```sh
+RTL_TCP_HOST=192.168.0.10 RTL_TCP_MODE=dab RTL_TCP_DAB_FREQ=227.36e6 docker compose up -d
+```
+
+## Development
+
+Requires Node.js ≥ 18.
+
+```sh
+npm install
+
+# run server + client (Vite dev server with proxy to :8080)
+npm run dev
+
+# or run the pieces separately
+npm run dev:server   # Node backend on :8080
+npm run dev:client   # Vite on :5173 (proxies /api and /ws to :8080)
+```
+
+The dev backend spawns `eti-cmdline-rtl_tcp` and `dablin` from `$PATH` (set `ETI_CMDLINE_BIN`/`DABLIN_BIN` to override). To test DAB locally without Docker, build eti-cmdline first:
+
+```sh
+git clone https://github.com/JvanKatwijk/eti-stuff.git
+cd eti-stuff/eti-cmdline
+cmake . -DRTL_TCP=ON && make          # needs build-essential, cmake,
+                                       # zlib1g-dev, libfftw3-dev,
+                                       # libsndfile1-dev, libsamplerate0-dev
+sudo apt install dablin                # ETI -> PCM decoder
+```
+
+### Tests
+
+```sh
+npm test
+```
+
+Runs offline unit tests against a fake rtl_tcp server (protocol + FM demod + spectrum + DAB channel map).
+
+## How it works
+
+- **FM**: the backend connects to rtl_tcp at 288 kS/s, demodulates FM with a zero-IF FFT pipeline (120 Hz bins), and streams mono 48 kHz int16 PCM over a WebSocket.
+- **DAB**: the backend runs `eti-cmdline-rtl_tcp -H host -C <channel>` (rtl_tcp at 2.048 MS/s) and pipes ETI frames into `dablin -p -1`, which emits float32 stereo PCM; the server downmixes to mono int16.
+- The client uses a Web Audio `AudioContext` at 48 kHz for gapless playback and renders spectrum lines on a canvas waterfall.
+
+### WebSocket protocol
+
+- Text `status` messages carry `mode`, `connected`, `freq`, `signal`, `audio`, and DAB fields (`channel`, `service`, `ensemble`, `snr`).
+- Binary frames: `0x01` = PCM int16 LE (mono 48 kHz), `0x02` = spectrum dB line (`uint16 LE` length prefix).
+
+## Project layout
+
+```
+server/
+  index.js        Express + WebSocket server, protocol handling
+  audioStream.js  mode-aware stream manager (FM / DAB)
+  dab.js          DAB pipeline: eti-cmdline-rtl_tcp | dablin, channel map
+  dsp.js          FFT-based FM demodulator
+  rtlTcp.js       rtl_tcp client (single-instance, exclusive connection)
+  spectrum.js     spectrum analyzer (FFT -> dB lines)
+  test.js         offline unit tests
+client/
+  src/App.jsx     UI: mode toggle, tuner, presets, waterfall / DAB panel
+  src/audio.js    Web Audio playback
+  src/Waterfall.jsx  spectrum waterfall canvas
+Dockerfile        multi-stage: build eti-stuff + client, runtime with dablin
+docker-compose.yml
+```

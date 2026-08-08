@@ -1,0 +1,17 @@
+services:
+  sdr-fm:
+    build: .
+    image: sdr-fm-receiver:latest
+    ports:
+      - "8080:8080"
+    environment:
+      # Default rtl_tcp host reachable from this container. Override as needed.
+      - RTL_TCP_HOST=192.168.0.6
+      - RTL_TCP_PORT=1234
+      - RTL_TCP_FREQ=95.1e6
+      # Fixed tuner gain (dB). Auto gain overloads the ADC on strong signals.
+      - RTL_TCP_GAIN=40
+      # Default receiver mode (fm|dab) and DAB ensemble frequency (Hz).
+      - RTL_TCP_MODE=fm
+      - RTL_TCP_DAB_FREQ=216.928e6
+    restart: unless-stopped
