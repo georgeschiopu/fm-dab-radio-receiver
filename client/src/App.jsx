@@ -49,6 +49,7 @@ export default function App() {
   const [dabServices, setDabServices] = useState([]);
   const [dabService, setDabService] = useState('');
   const [dabSlide, setDabSlide] = useState(null);
+  const [dabLogo, setDabLogo] = useState(null);
   const [presets, setPresets] = useState([]);
   const [newName, setNewName] = useState('');
   const [span, setSpan] = useState(288_000);
@@ -129,6 +130,7 @@ export default function App() {
                 snr: msg.snr != null ? msg.snr : null,
               });
               if (Array.isArray(msg.services)) setDabServices(msg.services);
+              setDabLogo(msg.logo || null);
               if (playerRef.current) playerRef.current.setRate(msg.rate || 48000);
               if (msg.connected) setStats({ signal: msg.signal || 0, audio: msg.audio || 0 });
               setStatus(
@@ -432,7 +434,13 @@ export default function App() {
             </div>
           ) : (
             <div className="dab-panel">
-              <div className={`dab-info${dabSlide ? ' has-slide' : ''}`} style={dabSlide ? { backgroundImage: `url(${dabSlide})` } : null}>
+              <div
+                className={`dab-info${dabSlide ? ' has-slide' : ''}${dabLogo ? ' has-logo' : ''}`}
+                style={dabSlide ? { backgroundImage: `url(${dabSlide})` } : null}
+              >
+                {dabLogo && !dabSlide && (
+                  <img className="dab-logo" src={dabLogo} alt={dabInfo?.service || ''} />
+                )}
                 {dabInfo && dabInfo.ensemble ? (
                   <div className="dab-ensemble">{dabInfo.ensemble}</div>
                 ) : (

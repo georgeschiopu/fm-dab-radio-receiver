@@ -10,6 +10,32 @@ import { DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
 import { DEFAULT_BINS } from './spectrum.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Curated station -> logo map (label and SId keys). Served from /logos/.
+const STATIONS_FILE = path.join(__dirname, 'stations.json');
+let stationMap = { logos: {}, sids: {} };
+try {
+  stationMap = JSON.parse(fs.readFileSync(STATIONS_FILE, 'utf8'));
+} catch (err) {
+  console.warn(`[logo] could not read ${STATIONS_FILE}: ${err.message}`);
+}
+const LOGOS_DIR = path.join(__dirname, 'logos');
+
+const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+const normLogos = new Map();
+for (const [label, file] of Object.entries(stationMap.logos || {})) normLogos.set(norm(label), file);
+
+function logoFor(service, sid) {
+  if (sid && stationMap.sids && stationMap.sids[sid]) {
+    const file = normLogos.get(norm(stationMap.sids[sid]));
+    if (file) return `/logos/${encodeURIComponent(file)}`;
+  }
+  if (service) {
+    const file = normLogos.get(norm(service));
+    if (file) return `/logos/${encodeURIComponent(file)}`;
+  }
+  return null;
+}
 const PORT = Number(process.env.PORT || 8080);
 const DEFAULT_HOST = process.env.RTL_TCP_HOST || '192.168.0.6';
 const DEFAULT_PORT = Number(process.env.RTL_TCP_PORT || 1234);
@@ -41,9 +67,11 @@ function clearSlides() {
 }
 
 function statusMsg(s) {
+  const st = s || manager.status();
   return {
     type: 'status',
-    ...(s || manager.status()),
+    ...st,
+    logo: st.mode === 'dab' ? logoFor(st.service, st.sid) : null,
     span: DEFAULT_SAMPLE_RATE,
     spanDab: DAB_SAMPLE_RATE,
     bins: DEFAULT_BINS,
@@ -90,6 +118,7 @@ app.get('/api/config', (req, res) => {
   });
 });
 
+app.use('/logos', express.static(LOGOS_DIR, { maxAge: '1h' }));
 app.use(express.static(DIST_DIR));
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api')) return next();

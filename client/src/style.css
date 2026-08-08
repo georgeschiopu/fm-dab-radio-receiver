@@ -119,16 +119,28 @@ select {
   text-align: center;
 }
 
-.dab-info.has-slide::before {
+.dab-info.has-slide::before,
+.dab-info.has-logo::before {
   content: "";
   position: absolute;
   inset: 0;
   background: rgba(13, 17, 23, 0.55);
 }
 
-.dab-info.has-slide > * {
+.dab-info.has-slide > *,
+.dab-info.has-logo > * {
   position: relative;
   z-index: 1;
+}
+
+.dab-logo {
+  width: 120px;
+  height: 120px;
+  object-fit: contain;
+  margin: 0 auto;
+  background: rgba(13, 17, 23, 0.7);
+  border-radius: 6px;
+  padding: 6px;
 }
 
 .dab-ensemble {

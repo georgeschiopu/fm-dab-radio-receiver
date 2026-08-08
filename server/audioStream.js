@@ -146,6 +146,7 @@ export class AudioStreamManager extends EventEmitter {
       gain: this.gain,
       channel: this.mode === 'dab' ? this.dab.channel : null,
       service: this.mode === 'dab' ? this.dab.service : null,
+      sid: this.mode === 'dab' ? this.dab.sid : null,
       ensemble: this.mode === 'dab' ? this.dab.ensemble : null,
       snr: this.mode === 'dab' ? this.dab.snr : null,
       services: this.mode === 'dab' ? this.dab.services : [],
