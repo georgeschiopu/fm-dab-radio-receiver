@@ -1,0 +1,151 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index b697b60..36d3255 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -12,6 +12,8 @@ list(APPEND dablin_sources
+     eti_player.cpp
+     dab_decoder.cpp
+     fic_decoder.cpp
++    mot_manager.cpp
++    pad_decoder.cpp
+     pcm_output.cpp
+     tools.cpp
+     version.cpp
+@@ -23,8 +25,6 @@ set(dablin_cli_sources
+     )
+ 
+ set(dablin_gtk_sources
+-    mot_manager.cpp
+-    pad_decoder.cpp
+     dablin_gtk.cpp
+     dablin_gtk_dl_plus.cpp
+     dablin_gtk_sls.cpp
+diff --git a/src/dablin.cpp b/src/dablin.cpp
+index 04acd8d..1ebc065 100644
+--- a/src/dablin.cpp
++++ b/src/dablin.cpp
+@@ -18,6 +18,11 @@
+ 
+ #include "dablin.h"
+ 
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <sys/stat.h>
++
+ static DABlinText *dablin = nullptr;
+ 
+ static void break_handler(int) {
+@@ -274,6 +279,7 @@ DABlinText::DABlinText(DABlinTextOptions options) {
+ 	}
+ 
+ 	fic_decoder = new FICDecoder(this, options.disable_dyn_fic_msgs);
++	pad_decoder = new PADDecoder(this, false);
+ }
+ 
+ DABlinText::~DABlinText() {
+@@ -281,6 +287,7 @@ DABlinText::~DABlinText() {
+ 	delete ensemble_source;
+ 	delete ensemble_player;
+ 	delete fic_decoder;
++	delete pad_decoder;
+ }
+ 
+ void DABlinText::EnsembleUpdateProgress(const ENSEMBLE_PROGRESS& progress) {
+@@ -311,6 +318,9 @@ void DABlinText::FICChangeService(const LISTED_SERVICE& service) {
+ 	if(!ensemble_player->IsSameAudioService(service.audio_service))
+ 		ensemble_player->SetAudioService(service.audio_service);
+ 
++	// enable MOT slideshow decoding, if announced by the service
++	pad_decoder->SetMOTAppType(service.sls_app_type);
++
+ 	// set XTerm window title to service name
+ 	fprintf(stderr, "\x1B]0;" "%s - DABlin" "\a", label.c_str());
+ }
+@@ -318,3 +328,44 @@ void DABlinText::FICChangeService(const LISTED_SERVICE& service) {
+ void DABlinText::FICDiscardedFIB() {
+ 	fprintf(stderr, "\x1B[33m" "(FIB)" "\x1B[0m" " ");
+ }
++
++void DABlinText::PADChangeSlide(const MOT_FILE& slide) {
++	std::string ext;
++	switch(slide.content_sub_type) {
++	case MOT_FILE::CONTENT_SUB_TYPE_JFIF:
++		ext = "jpg";
++		break;
++	case MOT_FILE::CONTENT_SUB_TYPE_PNG:
++		ext = "png";
++		break;
++	default:
++		return;
++	}
++
++	if(slide.data.empty())
++		return;
++
++	const char* env_dir = getenv("DAB_SLIDES_DIR");
++	std::string dir = (env_dir && *env_dir) ? env_dir : "/tmp/dab-slides";
++	if(mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) {
++		perror("DABlin: error while creating slides dir");
++		return;
++	}
++
++	std::string tmp_path = dir + "/slide.new." + ext;
++	std::string final_path = dir + "/slide." + ext;
++
++	FILE* f = fopen(tmp_path.c_str(), "wb");
++	if(!f) {
++		fprintf(stderr, "DABlin: cannot open slide file %s\n", tmp_path.c_str());
++		return;
++	}
++	if(fwrite(&slide.data[0], 1, slide.data.size(), f) != slide.data.size())
++		perror("DABlin: error while writing slide file");
++	fclose(f);
++
++	if(rename(tmp_path.c_str(), final_path.c_str()) != 0)
++		perror("DABlin: error while moving slide file");
++	else
++		fprintf(stderr, "DABlin: slideshow saved to %s (%zu bytes)\n", final_path.c_str(), slide.data.size());
++}
+diff --git a/src/dablin.h b/src/dablin.h
+index b57570d..719a5d7 100644
+--- a/src/dablin.h
++++ b/src/dablin.h
+@@ -29,6 +29,7 @@
+ #include "edi_source.h"
+ #include "edi_player.h"
+ #include "fic_decoder.h"
++#include "pad_decoder.h"
+ #include "tools.h"
+ #include "version.h"
+ 
+@@ -71,21 +72,28 @@ DABlinTextOptions() :
+ 
+ 
+ // --- DABlinText -----------------------------------------------------------------
+-class DABlinText : EnsembleSourceObserver, EnsemblePlayerObserver, FICDecoderObserver {
++class DABlinText : EnsembleSourceObserver, EnsemblePlayerObserver, FICDecoderObserver, PADDecoderObserver {
+ private:
+ 	DABlinTextOptions options;
+ 
+ 	EnsembleSource *ensemble_source;
+ 	EnsemblePlayer *ensemble_player;
+ 	FICDecoder *fic_decoder;
++	PADDecoder *pad_decoder;
+ 
+ 	void EnsembleProcessFrame(const uint8_t *data) {ensemble_player->ProcessFrame(data);}
+ 	void EnsembleUpdateProgress(const ENSEMBLE_PROGRESS& progress);
+ 
+ 	void EnsembleProcessFIC(const uint8_t *data, size_t len) {fic_decoder->Process(data, len);}
++	void EnsembleProcessPAD(const uint8_t *xpad_data, size_t xpad_len, bool exact_xpad_len, const uint8_t* fpad_data) {pad_decoder->Process(xpad_data, xpad_len, exact_xpad_len, fpad_data);}
+ 
+ 	void FICChangeService(const LISTED_SERVICE& service);
+ 	void FICDiscardedFIB();
++
++	void PADChangeSlide(const MOT_FILE& slide);
++	void PADChangeDynamicLabel(const DL_STATE& /*dl*/) {}
++	void PADFileProgress(const double /*fraction*/) {}
++	void PADLengthError(size_t /*announced_xpad_len*/, size_t /*xpad_len*/) {}
+ public:
+ 	DABlinText(DABlinTextOptions options);
+ 	~DABlinText();

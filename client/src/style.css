@@ -18,7 +18,7 @@ body {
 }
 
 .card {
-  width: 340px;
+  width: min(960px, 96vw);
   background: #161b22;
   border: 1px solid #30363d;
   border-radius: 12px;
@@ -28,6 +28,39 @@ body {
   gap: 16px;
   max-height: 92vh;
   overflow-y: auto;
+}
+
+.columns {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.col-left {
+  flex: 0 0 320px;
+}
+
+.col-right {
+  flex: 1;
+}
+
+@media (max-width: 760px) {
+  .columns {
+    flex-direction: column;
+  }
+
+  .col-left,
+  .col-right {
+    flex: 1;
+    width: 100%;
+  }
 }
 
 h1 {
@@ -79,7 +112,23 @@ select {
   justify-content: center;
   gap: 8px;
   background: #0d1117;
+  background-size: cover;
+  background-position: center;
+  position: relative;
+  overflow: hidden;
   text-align: center;
+}
+
+.dab-info.has-slide::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(13, 17, 23, 0.55);
+}
+
+.dab-info.has-slide > * {
+  position: relative;
+  z-index: 1;
 }
 
 .dab-ensemble {
@@ -275,8 +324,6 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  border-top: 1px solid #30363d;
-  padding-top: 12px;
 }
 
 .stations-title {

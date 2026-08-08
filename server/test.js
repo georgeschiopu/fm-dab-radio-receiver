@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { RtlTcpClient, CMD, DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
 import { FmDecoder } from './dsp.js';
 import { SpectrumAnalyzer, DEFAULT_BINS } from './spectrum.js';
-import { channelBlockForFreq, channelFreqKHz } from './dab.js';
+import { channelBlockForFreq, channelFreqKHz, DabReceiver } from './dab.js';
 
 const assert = (cond, msg) => {
   if (!cond) {
@@ -200,6 +200,32 @@ function testSpectrum() {
   console.log('OK: spectrum analyzer localizes a 20 kHz carrier');
 }
 
+function testDabPcmConversion() {
+  console.log('--- dab pcm conversion test ---');
+  const rec = new DabReceiver();
+  rec._setFormat(48000, 2, false); // dablin int16 stereo
+
+  const out = [];
+  rec.onPcm = (pcm, rate) => out.push({ pcm, rate });
+
+  // 100 stereo frames: left = 1000, right = 2000
+  const nFrames = 100;
+  const buf = Buffer.alloc(nFrames * 4);
+  for (let i = 0; i < nFrames; i++) {
+    buf.writeInt16LE(1000, i * 4);
+    buf.writeInt16LE(2000, i * 4 + 2);
+  }
+  rec._onPcm(buf);
+
+  assert(out.length === 1, `expected one PCM push, got ${out.length}`);
+  const { pcm, rate } = out[0];
+  assert(pcm.length === nFrames, `expected ${nFrames} mono samples, got ${pcm.length}`);
+  assert(rate === 48000, `rate ${rate} != 48000`);
+  assert(pcm[0] === 1500, `first sample ${pcm[0]} != averaged 1500`);
+  assert(Math.abs(pcm[nFrames - 1] - 1500) === 0, 'last sample not averaged');
+  console.log(`OK: ${pcm.length} int16 mono samples from int16 stereo, avg sample=${pcm[0]}`);
+}
+
 function testDabChannelMap() {
   console.log('--- dab channel map test ---');
   const cases = [
@@ -224,6 +250,7 @@ function testDabChannelMap() {
 testProtocol()
   .then(testDsp)
   .then(testSpectrum)
+  .then(testDabPcmConversion)
   .then(testDabChannelMap)
   .then(() => {
     console.log('\nAll tests passed.');

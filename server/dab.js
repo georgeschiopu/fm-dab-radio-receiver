@@ -129,8 +129,10 @@ export class DabReceiver {
       if (this.dablin !== dablin) return;
       for (const line of String(d).split('\n')) {
         const clean = stripAnsi(line);
-        const fm = clean.match(/PCMOutput: format set; samplerate: (\d+), channels: (\d+)(?:, output: ([\w ]+))?/);
-        if (fm) this._setFormat(Number(fm[1]), Number(fm[2]), fm[3] ? fm[3].startsWith('32bit float') : true);
+        // dablin's console PCM output is always 16-bit signed LE (FAAD2 with
+        // FAAD_FMT_16BIT for DAB+, mpg123 with MPG123_ENC_SIGNED_16 for DAB).
+        const fm = clean.match(/PCMOutput: format set; samplerate: (\d+), channels: (\d+)/);
+        if (fm) this._setFormat(Number(fm[1]), Number(fm[2]), false);
         const sl = clean.match(/service label '([^']+)'/);
         if (sl) this._addService(sl[1]);
         const el = clean.match(/ensemble label '([^']+)'/);

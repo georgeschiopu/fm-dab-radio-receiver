@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import { AudioStreamManager } from './audioStream.js';
+import { SlideWatcher } from './slides.js';
 import { DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
 import { DEFAULT_BINS } from './spectrum.js';
 
@@ -26,6 +27,18 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 const manager = new AudioStreamManager();
 manager.on('status', (s) => broadcast(statusMsg(s)));
 manager.on('error', (err) => broadcast({ type: 'error', message: err.message }));
+
+// MOT slideshow covers written by dablin -> broadcast to clients as base64.
+const slides = new SlideWatcher();
+slides.on('slide', (s) =>
+  broadcast({ type: 'slide', mime: s.mime, data: s.data.toString('base64') })
+);
+slides.start();
+
+function clearSlides() {
+  slides.clear();
+  broadcast({ type: 'slide', data: null });
+}
 
 function statusMsg(s) {
   return {
@@ -107,6 +120,7 @@ wss.on('connection', (ws) => {
       const mode = msg.mode || 'fm';
       const service = msg.service !== undefined && msg.service !== '' ? String(msg.service) : null;
       if (!Number.isFinite(freq) || freq <= 0) return;
+      clearSlides();
       try {
         if (
           !manager.running ||
@@ -127,6 +141,7 @@ wss.on('connection', (ws) => {
       const gain = msg.gain !== undefined && msg.gain !== '' ? Number(msg.gain) : DEFAULT_GAIN;
       if (Number.isFinite(gain)) manager.setGain(gain);
     } else if (msg.op === 'stop') {
+      clearSlides();
       manager.stop();
     }
   });
@@ -157,6 +172,7 @@ wss.on('close', () => {
 
 function shutdown() {
   manager.stop();
+  slides.stop();
   clearInterval(heartbeat);
   clearInterval(statsTimer);
   server.close(() => process.exit(0));

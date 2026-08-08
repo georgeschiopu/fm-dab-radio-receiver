@@ -48,6 +48,7 @@ export default function App() {
   const [dabInfo, setDabInfo] = useState(null);
   const [dabServices, setDabServices] = useState([]);
   const [dabService, setDabService] = useState('');
+  const [dabSlide, setDabSlide] = useState(null);
   const [presets, setPresets] = useState([]);
   const [newName, setNewName] = useState('');
   const [span, setSpan] = useState(288_000);
@@ -148,6 +149,8 @@ export default function App() {
           } else if (msg.type === 'error') {
             setStatus(`Error: ${msg.message}`);
             setBusy(false);
+          } else if (msg.type === 'slide') {
+            setDabSlide(msg.data ? `data:${msg.mime};base64,${msg.data}` : null);
           }
         } else {
           const bytes = new Uint8Array(ev.data);
@@ -193,6 +196,7 @@ export default function App() {
       setPlaying(true);
       setStatus('Tuning…');
       setDabInfo(null);
+      setDabSlide(null);
       if (mode === 'dab') setDabServices([]);
       if (waterfallRef.current) waterfallRef.current.clear();
     } catch (err) {
@@ -208,6 +212,7 @@ export default function App() {
     setPlaying(false);
     setStatus('Stopped');
     setDabInfo(null);
+    setDabSlide(null);
     if (waterfallRef.current) waterfallRef.current.clear();
   };
 
@@ -221,6 +226,7 @@ export default function App() {
     });
     if (m2 === 'dab') {
       setDabInfo(null);
+      setDabSlide(null);
     } else {
       if (waterfallRef.current) waterfallRef.current.clear();
     }
@@ -311,135 +317,141 @@ export default function App() {
         </button>
       </div>
 
-      <div className="row">
-        <label>
-          rtl_tcp host
-          <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="192.168.0.6" />
-        </label>
-        <label>
-          port
-          <input value={port} onChange={(e) => setPort(e.target.value)} inputMode="numeric" />
-        </label>
-      </div>
+      <div className="columns">
+        <div className="col col-left">
+          <div className="row">
+            <label>
+              rtl_tcp host
+              <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="192.168.0.6" />
+            </label>
+            <label>
+              port
+              <input value={port} onChange={(e) => setPort(e.target.value)} inputMode="numeric" />
+            </label>
+          </div>
 
-      {mode === 'fm' ? (
-        <label>
-          Frequency (MHz)
-          <input value={freq} onChange={changeFreq} placeholder="95.1" inputMode="decimal" />
-        </label>
-      ) : (
-        <>
           <label>
-            DAB channel
-            <select value={dabChannel} onChange={changeDabChannel}>
-              {DAB_CHANNELS.map(([name, mhz]) => (
-                <option key={name} value={name}>
-                  {name} — {mhz.toFixed(3)} MHz
-                </option>
-              ))}
-            </select>
+            RF gain (dB)
+            <input value={gain} onChange={changeGain} placeholder="40" inputMode="decimal" />
           </label>
-          <label>
-            Station
-            <select value={dabService} onChange={changeDabService} disabled={!dabServices.length}>
-              <option value="">First station found</option>
-              {dabServices.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </label>
-        </>
-      )}
 
-      <label>
-        RF gain (dB)
-        <input value={gain} onChange={changeGain} placeholder="40" inputMode="decimal" />
-      </label>
+          {mode === 'fm' ? (
+            <label>
+              Frequency (MHz)
+              <input value={freq} onChange={changeFreq} placeholder="95.1" inputMode="decimal" />
+            </label>
+          ) : (
+            <>
+              <label>
+                DAB channel
+                <select value={dabChannel} onChange={changeDabChannel}>
+                  {DAB_CHANNELS.map(([name, mhz]) => (
+                    <option key={name} value={name}>
+                      {name} — {mhz.toFixed(3)} MHz
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Station
+                <select value={dabService} onChange={changeDabService} disabled={!dabServices.length}>
+                  <option value="">First station found</option>
+                  {dabServices.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </>
+          )}
 
-      <div className="row buttons">
-        {!playing ? (
-          <button className="primary" onClick={play} disabled={busy}>
-            {busy ? 'Connecting…' : 'Play'}
-          </button>
-        ) : (
-          <button onClick={stop}>Stop</button>
-        )}
-      </div>
-
-      <label>
-        Volume
-        <input
-          type="range"
-          min="0"
-          max="1"
-          step="0.01"
-          value={volume}
-          onChange={changeVolume}
-        />
-      </label>
-
-      <div className="stations">
-        <div className="stations-title">Stations</div>
-        {presets.length === 0 && <div className="stations-empty">No saved stations yet.</div>}
-        {presets.map((p, i) => (
-          <div className="station" key={i}>
-            <button className="station-tune" onClick={() => selectPreset(p)}>
-              <span className="station-name">{p.name}</span>
-              <span className="station-freq">{p.freq} MHz</span>
-            </button>
-            <button className="station-del" onClick={() => removePreset(i)} title="Delete">
-              ✕
-            </button>
-          </div>
-        ))}
-        <div className="row">
-          <input
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && addPreset()}
-            placeholder="Station name"
-          />
-          <button onClick={addPreset}>Save current</button>
-        </div>
-      </div>
-
-      {mode === 'fm' ? (
-        <div className="waterfall-wrap">
-          <div className="waterfall-title">
-            Spectrum {centerHz ? `±${(span / 2 / 1e6).toFixed(2)} MHz around ${fmtMHz(centerHz)}` : '—'}
-          </div>
-          <div className="waterfall-canvas">
-            <Waterfall ref={waterfallRef} bins={bins} height={160} />
-            {centerHz && <div className="waterfall-marker" />}
-          </div>
-          <div className="waterfall-axis">
-            <span>{centerHz ? fmtMHz(centerHz - span / 2) : ''}</span>
-            <span className="waterfall-center">{centerHz ? fmtMHz(centerHz) : ''}</span>
-            <span>{centerHz ? fmtMHz(centerHz + span / 2) : ''}</span>
-          </div>
-        </div>
-      ) : (
-        <div className="dab-panel">
-          <div className="dab-info">
-            {dabInfo && dabInfo.ensemble ? (
-              <div className="dab-ensemble">{dabInfo.ensemble}</div>
+          <div className="row buttons">
+            {!playing ? (
+              <button className="primary" onClick={play} disabled={busy}>
+                {busy ? 'Connecting…' : 'Play'}
+              </button>
             ) : (
-              <div className="dab-ensemble dim">Waiting for ensemble…</div>
+              <button onClick={stop}>Stop</button>
             )}
-            <div className="dab-service">{dabInfo?.service || '—'}</div>
-            <div className="dab-meta">
-              {dabInfo?.channel ? `Channel ${dabInfo.channel}` : ''}
-              {dabInfo?.snr != null ? ` · SNR ${dabInfo.snr} dB` : ''}
+          </div>
+
+          <label>
+            Volume
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value={volume}
+              onChange={changeVolume}
+            />
+          </label>
+        </div>
+
+        <div className="col col-right">
+          <div className="stations">
+            <div className="stations-title">Stations</div>
+            {presets.length === 0 && <div className="stations-empty">No saved stations yet.</div>}
+            {presets.map((p, i) => (
+              <div className="station" key={i}>
+                <button className="station-tune" onClick={() => selectPreset(p)}>
+                  <span className="station-name">{p.name}</span>
+                  <span className="station-freq">{p.freq} MHz</span>
+                </button>
+                <button className="station-del" onClick={() => removePreset(i)} title="Delete">
+                  ✕
+                </button>
+              </div>
+            ))}
+            <div className="row">
+              <input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && addPreset()}
+                placeholder="Station name"
+              />
+              <button onClick={addPreset}>Save current</button>
             </div>
           </div>
-        </div>
-      )}
 
-      <div className="meters">
-        <Meter label="Signal" value={stats.signal} />
-        <Meter label="Audio" value={stats.audio} />
+          {mode === 'fm' ? (
+            <div className="waterfall-wrap">
+              <div className="waterfall-title">
+                Spectrum {centerHz ? `±${(span / 2 / 1e6).toFixed(2)} MHz around ${fmtMHz(centerHz)}` : '—'}
+              </div>
+              <div className="waterfall-canvas">
+                <Waterfall ref={waterfallRef} bins={bins} height={160} />
+                {centerHz && <div className="waterfall-marker" />}
+              </div>
+              <div className="waterfall-axis">
+                <span>{centerHz ? fmtMHz(centerHz - span / 2) : ''}</span>
+                <span className="waterfall-center">{centerHz ? fmtMHz(centerHz) : ''}</span>
+                <span>{centerHz ? fmtMHz(centerHz + span / 2) : ''}</span>
+              </div>
+            </div>
+          ) : (
+            <div className="dab-panel">
+              <div className={`dab-info${dabSlide ? ' has-slide' : ''}`} style={dabSlide ? { backgroundImage: `url(${dabSlide})` } : null}>
+                {dabInfo && dabInfo.ensemble ? (
+                  <div className="dab-ensemble">{dabInfo.ensemble}</div>
+                ) : (
+                  <div className="dab-ensemble dim">Waiting for ensemble…</div>
+                )}
+                <div className="dab-service">{dabInfo?.service || '—'}</div>
+                <div className="dab-meta">
+                  {dabInfo?.channel ? `Channel ${dabInfo.channel}` : ''}
+                  {dabInfo?.snr != null ? ` · SNR ${dabInfo.snr} dB` : ''}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="meters">
+            <Meter label="Signal" value={stats.signal} />
+            <Meter label="Audio" value={stats.audio} />
+          </div>
+        </div>
       </div>
 
       <div className={`status ${status.startsWith('Error') ? 'error' : ''}`}>{status}</div>
