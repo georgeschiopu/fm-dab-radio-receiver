@@ -1,14 +1,15 @@
-# FM / DAB Radio Receiver
+# FM / NFM / DAB Radio Receiver
 
-A lightweight web-based radio receiver for **broadcast FM** and **DAB/DAB+** (digital radio) fed by a remote [rtl_tcp](https://github.com/keenerd/rtl-sdr-blog) SDR server.
+A lightweight web-based radio receiver for **broadcast FM**, **narrowband FM (NFM)** for amateur radio, and **DAB/DAB+** (digital radio) fed by a remote [rtl_tcp](https://github.com/keenerd/rtl-sdr-blog) SDR server.
 
-The Node.js backend demodulates FM IQ samples in-process and decodes DAB via an `eti-cmdline-rtl_tcp | dablin` pipeline. A small React client streams live audio and shows a real-time spectrum waterfall (FM) or the current DAB ensemble/service (DAB).
+The Node.js backend demodulates FM/NFM IQ samples in-process and decodes DAB via an `eti-cmdline-rtl_tcp | dablin` pipeline. A small React client streams live audio and shows a spectrum analyzer (FM), a waterfall centered on the tuned frequency (NFM), or the current DAB ensemble/service (DAB).
 
 ## Features
 
-- **FM mode** — in-process FFT-based FM demodulator (288 kHz sample rate), signal + audio meters, live spectrum waterfall.
+- **FM mode** — in-process FFT-based FM demodulator (288 kHz sample rate), signal + audio meters, live spectrum analyzer.
+- **NFM mode** — narrowband FM for amateur bands: 1 MS/s rtl_tcp so the **±0.5 MHz waterfall** (centered on the tuned frequency) shows adjacent activity. In-process NFM demod (4 kHz voice bandwidth) with **AGC** for a steady level and a manual **Squelch** slider (off by default, NFM-only) that mutes the noise floor when no carrier is locked.
 - **DAB mode** — full ETI decode chain (`eti-cmdline-rtl_tcp` → `dablin`) producing 48 kHz audio; live ensemble name, playing service and SNR on a DAB channel selector (5A–13F), plus a **Station dropdown** to pick a specific service from the tuned ensemble (or "first station found").
-- **Presets** — save/load stations in the browser (localStorage).
+- **Presets** — save/load stations in the browser (localStorage), kept **separately per mode**. DAB presets remember both the channel and the selected station, so clicking one tunes the ensemble and plays that service (`dablin -l`).
 - **Remote SDR** — works with any `rtl_tcp` server on your network (or localhost).
 
 ## Prerequisites
@@ -48,8 +49,9 @@ All options are environment variables (see `docker-compose.yml`):
 | `RTL_TCP_PORT`     | `1234`       | rtl_tcp port                                            |
 | `RTL_TCP_FREQ`     | `95.1e6`     | Initial FM frequency (Hz)                               |
 | `RTL_TCP_GAIN`     | `40`         | Tuner gain in dB (auto gain overloads strong signals)   |
-| `RTL_TCP_MODE`     | `fm`         | Initial receiver mode: `fm` or `dab`                    |
+| `RTL_TCP_MODE`     | `fm`         | Initial receiver mode: `fm`, `nfm` or `dab`             |
 | `RTL_TCP_DAB_FREQ` | `216.928e6`  | Initial DAB ensemble frequency (Hz), mapped to a block  |
+| `RTL_TCP_NFM_FREQ` | `145.0e6`    | Initial NFM frequency (Hz)                              |
 | `PORT`             | `8080`       | Web UI port                                             |
 
 Example with a DAB default:
@@ -90,17 +92,19 @@ sudo apt install dablin                # ETI -> PCM decoder
 npm test
 ```
 
-Runs offline unit tests against a fake rtl_tcp server (protocol + FM demod + spectrum + DAB channel map).
+Runs offline unit tests against a fake rtl_tcp server (protocol + FM/NFM demod + AGC/squelch + resampler + spectrum + DAB channel map).
 
 ## How it works
 
 - **FM**: the backend connects to rtl_tcp at 288 kS/s, demodulates FM with a zero-IF FFT pipeline (120 Hz bins), and streams mono 48 kHz int16 PCM over a WebSocket.
+- **NFM**: the backend connects at 1 MS/s so the whole ±0.5 MHz waterfall span is visible; demodulates narrowband FM with a 4 kHz voice bandwidth, applies AGC to hold a steady audio level, optionally gates the output with a carrier-lock squelch, and resamples 50 kHz → 48 kHz server-side before streaming (so voices keep the correct pitch).
 - **DAB**: the backend runs `eti-cmdline-rtl_tcp -H host -C <channel>` (rtl_tcp at 2.048 MS/s) and pipes ETI frames into `dablin` (PCM to stdout), which emits the audio at the service's native rate/format (48/32/24 kHz, mono/stereo, float32 or int16); the server downmixes to mono int16 and the client plays it at the reported rate. `-l <label>` selects a specific station from the ensemble's FIC listing.
-- The client uses a Web Audio `AudioContext` at 48 kHz for gapless playback and renders spectrum lines on a canvas waterfall.
+- The client uses a Web Audio `AudioContext` at 48 kHz for gapless playback and renders spectrum/waterfall lines on a canvas.
 
 ### WebSocket protocol
 
-- Text `status` messages carry `mode`, `connected`, `freq`, `signal`, `audio`, and DAB fields (`channel`, `service`, `ensemble`, `snr`).
+- Text `status` messages carry `mode`, `connected`, `freq`, `signal`, `audio`, `squelch`, and DAB fields (`channel`, `service`, `ensemble`, `snr`).
+- Client → server text ops: `tune` (mode, frequency, gain, optional DAB `service` and NFM `squelch`), `gain`, `squelch`, `stop`.
 - Binary frames: `0x01` = PCM int16 LE (mono 48 kHz), `0x02` = spectrum dB line (`uint16 LE` length prefix).
 
 ## Project layout
@@ -108,16 +112,17 @@ Runs offline unit tests against a fake rtl_tcp server (protocol + FM demod + spe
 ```
 server/
   index.js        Express + WebSocket server, protocol handling
-  audioStream.js  mode-aware stream manager (FM / DAB)
+  audioStream.js  mode-aware stream manager (FM / NFM / DAB)
   dab.js          DAB pipeline: eti-cmdline-rtl_tcp | dablin, channel map
-  dsp.js          FFT-based FM demodulator
+  dsp.js          FM/NFM demodulator (AGC, squelch, 50k->48k resampler)
   rtlTcp.js       rtl_tcp client (single-instance, exclusive connection)
   spectrum.js     spectrum analyzer (FFT -> dB lines)
   test.js         offline unit tests
 client/
-  src/App.jsx     UI: mode toggle, tuner, presets, waterfall / DAB panel
+  src/App.jsx     UI: mode toggle, tuner, presets, spectrum / waterfall / DAB panel
   src/audio.js    Web Audio playback
-  src/Waterfall.jsx  spectrum waterfall canvas
+  src/SpectrumAnalyzer.jsx  smooth FM spectrum canvas
+  src/Waterfall.jsx  NFM waterfall canvas
 Dockerfile        multi-stage: build eti-stuff + client, runtime with dablin
 docker-compose.yml
 ```
