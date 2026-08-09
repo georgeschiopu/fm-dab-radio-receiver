@@ -21,7 +21,7 @@ index b697b60..36d3255 100644
      dablin_gtk_dl_plus.cpp
      dablin_gtk_sls.cpp
 diff --git a/src/dablin.cpp b/src/dablin.cpp
-index 04acd8d..1ebc065 100644
+index 04acd8d..7704671 100644
 --- a/src/dablin.cpp
 +++ b/src/dablin.cpp
 @@ -18,6 +18,11 @@
@@ -40,7 +40,7 @@ index 04acd8d..1ebc065 100644
  	}
  
  	fic_decoder = new FICDecoder(this, options.disable_dyn_fic_msgs);
-+	pad_decoder = new PADDecoder(this, false);
++	pad_decoder = new PADDecoder(this, true);
  }
  
  DABlinText::~DABlinText() {

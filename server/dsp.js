@@ -4,6 +4,67 @@ const DEEMPHASIS_TAU = 75e-6; // s, standard broadcast FM de-emphasis
 const DC_R = 0.9995; // DC-blocker pole
 const PCM_GAIN = 0.35; // headroom for typical broadcast deviation
 
+// AGC keeps the demodulated NFM audio near a fixed RMS level regardless of
+// deviation / signal strength, and stops the discriminator noise from
+// clipping to full scale (the "loud static" complaint).
+const AGC_TARGET = 0.18; // target output RMS (0..1)
+const AGC_ATTACK = 0.25; // gain reduce rate (signal got louder)
+const AGC_RELEASE = 0.05; // gain raise rate (signal got quieter)
+const AGC_MAX_GAIN = 60;
+
+// Squelch: an unlocked discriminator produces phase jumps near +/- pi, while
+// a locked NFM carrier stays within a few hundred Hz of the center. We count
+// the fraction of samples whose instantaneous frequency exceeds SQUELCH_RAD
+// and open/close the gate with hysteresis.
+const SQUELCH_RAD = 1.0; // > ~159 kHz instantaneous offset = noise jump
+const SQUELCH_OPEN = 0.01; // jump ratio below which a carrier is present
+const SQUELCH_CLOSE = 0.05; // jump ratio above which it is pure noise
+
+// Linear interpolator for rational rate conversion (50 kHz -> 48 kHz).
+// The audio is already low-passed well below Nyquist, so linear interp is
+// perfectly adequate for voice-grade NFM.
+export class LinearResampler {
+  constructor(fromRate, toRate) {
+    this.ratio = fromRate / toRate;
+    this.t = 0; // fractional input position of the next output sample
+    this.prev = 0; // input sample just before the current buffer
+    this.hasPrev = false;
+  }
+
+  reset() {
+    this.t = 0;
+    this.prev = 0;
+    this.hasPrev = false;
+  }
+
+  process(input) {
+    const n = input.length;
+    if (!this.hasPrev) {
+      this.prev = n ? input[0] : 0;
+      this.hasPrev = true;
+    }
+    const { ratio, prev } = this;
+    const out = [];
+    let t = this.t;
+    while (t < 0) {
+      const frac = t + 1;
+      out.push(prev * (1 - frac) + input[0] * frac);
+      t += ratio;
+    }
+    while (t < n) {
+      const idx = Math.floor(t);
+      const frac = t - idx;
+      const s0 = idx === 0 ? prev : input[idx - 1];
+      const s1 = input[idx];
+      out.push(s0 + (s1 - s0) * frac);
+      t += ratio;
+    }
+    this.t = t - n;
+    this.prev = input[n - 1];
+    return Float64Array.from(out);
+  }
+}
+
 function designLowpass(cutoff, fs, n) {
   // Blackman-Harris windowed sinc, unity DC gain
   const h = new Float64Array(n);
@@ -128,16 +189,55 @@ class FirDecimator {
 }
 
 export class FmDecoder {
-  constructor({ inRate = 288_000 } = {}) {
-    if (inRate % AUDIO_RATE !== 0) throw new Error(`inRate ${inRate} must be a multiple of ${AUDIO_RATE}`);
+  constructor({
+    inRate = 288_000,
+    audioRate = AUDIO_RATE,
+    audioCutoff = AUDIO_CUTOFF,
+    deemphasis = DEEMPHASIS_TAU,
+    gain = PCM_GAIN,
+    taps = 256,
+    outputRate = 0, // if set (!= audioRate) the audio is resampled to it
+    agc = false, // automatic gain control on the demodulated audio
+    squelch = 0, // 0 = off; otherwise a level in 0..1 that tightens the gate
+  } = {}) {
+    if (inRate % audioRate !== 0) throw new Error(`inRate ${inRate} must be a multiple of ${audioRate}`);
     this.inRate = inRate;
-    this.m = inRate / AUDIO_RATE;
-    this.dec = new FirDecimator(designLowpass(AUDIO_CUTOFF, inRate, 256), this.m);
+    this.audioRate = outputRate || audioRate; // final rate reported to the client
+    this.decRate = audioRate; // rate the FIR decimator outputs
+    this.m = inRate / audioRate;
+    this.dec = new FirDecimator(designLowpass(audioCutoff, inRate, taps), this.m);
     this.dc = { R: DC_R, xpR: 0, ypR: 0, xpI: 0, ypI: 0 };
     this.prev = { r: 0, i: 0 };
-    this.deem = { y: 0, alpha: 1 - Math.exp(-1 / (inRate * DEEMPHASIS_TAU)) };
+    this.deem = { y: 0, alpha: deemphasis > 0 ? 1 - Math.exp(-1 / (inRate * deemphasis)) : 1 };
+    this.gain = gain;
+    this.agc = agc;
+    this.squelch = 0;
+    this.squelchLevel = 0;
+    this.squelchClose = SQUELCH_CLOSE;
+    this.agcGain = agc ? 1 : gain;
+    this.gate = 1;
+    this.squelchOpen = false;
+    this.resampler = outputRate && outputRate !== audioRate ? new LinearResampler(audioRate, outputRate) : null;
     this.bandRms = 0;
     this.audioRms = 0;
+    this.outputRms = 0;
+    this.setSquelch(squelch);
+  }
+
+  // Set the squelch level. 0 disables it (gate always open); a value in 0..1
+  // enables carrier-lock gating, with higher values closing on cleaner signals.
+  setSquelch(level) {
+    const v = Math.min(1, Math.max(0, Number(level) || 0));
+    const wasOn = this.squelch;
+    this.squelchLevel = v;
+    this.squelch = v > 0 ? 1 : 0;
+    // Higher level -> closer to the open threshold -> tighter squelch.
+    this.squelchClose = this.squelch ? SQUELCH_OPEN + 0.2 * (1 - v) : SQUELCH_CLOSE;
+    if (this.squelch && !wasOn) this.gate = 0; // start muted, no noise burst
+    if (!this.squelch) {
+      this.squelchOpen = false;
+      this.gate = 1;
+    }
   }
 
   reset() {
@@ -147,10 +247,15 @@ export class FmDecoder {
     this.deem = { y: 0, alpha: this.deem.alpha };
     this.bandRms = 0;
     this.audioRms = 0;
+    this.outputRms = 0;
+    this.agcGain = this.agc ? 1 : this.gain;
+    this.squelchOpen = false;
+    this.gate = this.squelch ? 0 : 1;
+    if (this.resampler) this.resampler.reset();
   }
 
   // buf: Node Buffer of interleaved unsigned 8-bit I/Q at inRate.
-  // Returns a fresh Int16Array of 48 kHz mono PCM.
+  // Returns a fresh Int16Array of audioRate Hz mono PCM.
   process(buf) {
     const n = buf.length >>> 1;
     const r = new Float64Array(n);
@@ -193,20 +298,50 @@ export class FmDecoder {
     }
     this.deem.y = y;
 
+    // Squelch: count unlocked-phase noise jumps in the discriminator output.
+    if (this.squelch) {
+      let jumps = 0;
+      for (let s = 0; s < n; s++) if (m[s] > SQUELCH_RAD || m[s] < -SQUELCH_RAD) jumps++;
+      const ratio = jumps / n;
+      if (!this.squelchOpen && ratio < SQUELCH_OPEN) this.squelchOpen = true;
+      else if (this.squelchOpen && ratio > this.squelchClose) this.squelchOpen = false;
+    }
+
     const a = this.dec.processReal(m);
 
     let audioSum = 0;
     for (let k = 0; k < a.length; k++) audioSum += a[k] * a[k];
     this.audioRms = Math.sqrt(audioSum / Math.max(1, a.length));
 
-    const out = new Int16Array(a.length);
-    const g = PCM_GAIN * 32767;
-    for (let k = 0; k < a.length; k++) {
-      let v = a[k] * g;
+    // AGC: drive the decimated audio toward a fixed RMS level.
+    let g = this.gain;
+    if (this.agc) {
+      const target = AGC_TARGET / Math.max(this.audioRms, 1e-4);
+      const coeff = target < this.agcGain ? AGC_ATTACK : AGC_RELEASE;
+      this.agcGain += (target - this.agcGain) * coeff;
+      g = Math.min(this.agcGain, AGC_MAX_GAIN);
+    }
+
+    // Soft gate (squelch) with fast open / slow close to avoid clicks.
+    const gateTarget = this.squelch && !this.squelchOpen ? 0 : 1;
+    this.gate += (gateTarget - this.gate) * (gateTarget > this.gate ? 0.7 : 0.3);
+
+    let out = a;
+    if (this.resampler) out = this.resampler.process(a);
+
+    const scaled = new Int16Array(out.length);
+    const gg = (g * this.gate) * 32767;
+    for (let k = 0; k < out.length; k++) {
+      let v = out[k] * gg;
       if (v > 32767) v = 32767;
       else if (v < -32768) v = -32768;
-      out[k] = v;
+      scaled[k] = v;
     }
-    return out;
+
+    let outSum = 0;
+    for (let k = 0; k < scaled.length; k++) outSum += (scaled[k] / 32768) ** 2;
+    this.outputRms = Math.sqrt(outSum / Math.max(1, scaled.length));
+
+    return scaled;
   }
 }

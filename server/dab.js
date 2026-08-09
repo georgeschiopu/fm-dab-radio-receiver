@@ -56,9 +56,11 @@ export class DabReceiver {
     this.channel = null;
     this.gain = null;
     this.service = null;
+    this.sid = null;
     this.ensemble = null;
     this.snr = null;
     this.services = [];
+    this.sids = {};
     this.rate = null;
     this.channels = null;
     this.float32 = null;
@@ -73,6 +75,7 @@ export class DabReceiver {
       channel: this.channel,
       gain: this.gain,
       service: this.service,
+      sid: this.sid,
       ensemble: this.ensemble,
       snr: this.snr,
       services: this.services,
@@ -135,8 +138,15 @@ export class DabReceiver {
         if (fm) this._setFormat(Number(fm[1]), Number(fm[2]), false);
         const sl = clean.match(/service label '([^']+)'/);
         if (sl) this._addService(sl[1]);
+        const sid = clean.match(/SId 0x([0-9A-Fa-f]{4}): programme service label '([^']+)'/);
+        if (sid) {
+          this.sids[sid[2]] = sid[1].toUpperCase();
+          if (sid[2] === this.service) this.sid = sid[1].toUpperCase();
+        }
         const el = clean.match(/ensemble label '([^']+)'/);
         if (el) this.ensemble = el[1];
+        const sh = clean.match(/slideshow saved to (.+) \((\d+) bytes\)/);
+        if (sh) console.log(`[dab] slideshow saved: ${sh[1]} (${sh[2]} bytes)`);
       }
     });
     dablin.on('error', (err) => {
