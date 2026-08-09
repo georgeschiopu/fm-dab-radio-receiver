@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { AudioPlayer } from './audio.js';
 import SpectrumAnalyzer from './SpectrumAnalyzer.jsx';
+import Waterfall from './Waterfall.jsx';
 
-const STORAGE_KEY = 'sdr-fm-stations';
+// Presets are stored per mode so FM / NFM station lists stay separate.
+const presetKey = (m) => `sdr-${m}-stations`;
 
 const fmtMHz = (hz) => `${(hz / 1e6).toFixed(2)} MHz`;
 
@@ -38,8 +40,10 @@ export default function App() {
   const [port, setPort] = useState('1234');
   const [mode, setMode] = useState('fm');
   const [freq, setFreq] = useState('');
+  const [nfmFreq, setNfmFreq] = useState('145.000');
   const [dabFreq, setDabFreq] = useState('216.928');
   const [gain, setGain] = useState('');
+  const [squelch, setSquelch] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [volume, setVolume] = useState(0.8);
   const [status, setStatus] = useState('Idle');
@@ -61,6 +65,15 @@ export default function App() {
   const spectrumRef = useRef(null);
   const playingRef = useRef(false);
 
+  const loadPresets = (m) => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(presetKey(m)) || '[]');
+      if (Array.isArray(saved)) setPresets(saved);
+    } catch {
+      /* ignore */
+    }
+  };
+
   useEffect(() => {
     fetch('/api/config')
       .then((r) => r.json())
@@ -71,6 +84,9 @@ export default function App() {
         if (cfg.gain !== undefined) setGain(String(cfg.gain));
         if (cfg.mode) setMode(cfg.mode);
         if (cfg.dabFreq) setDabFreq((cfg.dabFreq / 1e6).toFixed(3));
+        if (cfg.nfmFreq) setNfmFreq((cfg.nfmFreq / 1e6).toFixed(3));
+        if (cfg.squelch !== undefined) setSquelch(cfg.squelch);
+        loadPresets(cfg.mode || 'fm');
       })
       .catch(() => {
         setHost('192.168.0.6');
@@ -78,14 +94,10 @@ export default function App() {
         setFreq('95.1');
         setGain('40');
         setDabFreq('216.928');
+        setNfmFreq('145.000');
         setMode('fm');
+        loadPresets('fm');
       });
-    try {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-      if (Array.isArray(saved)) setPresets(saved);
-    } catch {
-      /* ignore */
-    }
     return () => {
       playingRef.current = false;
       if (wsRef.current) wsRef.current.close();
@@ -95,11 +107,11 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
+      localStorage.setItem(presetKey(mode), JSON.stringify(presets));
     } catch {
       /* ignore */
     }
-  }, [presets]);
+  }, [presets, mode]);
 
   const ensurePlayer = async () => {
     if (!playerRef.current) playerRef.current = new AudioPlayer();
@@ -144,6 +156,7 @@ export default function App() {
                 setStats({ signal: msg.signal || 0, audio: msg.audio || 0 });
                 setCenterHz(msg.freq);
               }
+              if (playerRef.current) playerRef.current.setRate(msg.rate || 48000);
               if (msg.span) setSpan(msg.span);
               if (msg.bins) setBins(msg.bins);
             }
@@ -174,24 +187,28 @@ export default function App() {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   };
 
-  const play = async (freqOverride) => {
+  const play = async (freqOverride, modeOverride, serviceOverride) => {
     if (busy) return;
     setBusy(true);
     try {
-      const target = freqOverride ?? (mode === 'dab' ? dabFreq : freq);
+      const m = modeOverride || mode;
+      const target = freqOverride ?? (m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : freq);
       const player = await ensurePlayer();
       player.setVolume(volume);
       let ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) ws = await openWs();
       const freqHz = Math.round(parseFloat(target) * 1e6);
+      const dabServiceNow =
+        serviceOverride !== undefined && serviceOverride !== '' ? serviceOverride : dabService;
       send({
         op: 'tune',
-        mode,
+        mode: m,
         freq: freqHz,
         host,
         port: parseInt(port, 10),
         gain: gain.trim() === '' ? undefined : Number(gain),
-        service: mode === 'dab' ? dabService || undefined : undefined,
+        service: m === 'dab' ? dabServiceNow || undefined : undefined,
+        squelch: m === 'nfm' ? squelch : 0,
       });
       player.start();
       playingRef.current = true;
@@ -199,7 +216,7 @@ export default function App() {
       setStatus('Tuning…');
       setDabInfo(null);
       setDabSlide(null);
-      if (mode === 'dab') setDabServices([]);
+      if (m === 'dab') setDabServices([]);
       if (spectrumRef.current) spectrumRef.current.clear();
     } catch (err) {
       setStatus(`Error: ${err.message}`);
@@ -225,6 +242,7 @@ export default function App() {
       mode: m2,
       freq: Math.round(parseFloat(mhz) * 1e6),
       service: service || undefined,
+      squelch: m2 === 'nfm' ? squelch : 0,
     });
     if (m2 === 'dab') {
       setDabInfo(null);
@@ -258,15 +276,27 @@ export default function App() {
   const changeMode = (m) => {
     if (mode === m) return;
     setMode(m);
+    loadPresets(m);
     if (playingRef.current) {
-      tuneFreq(m === 'dab' ? dabFreq : freq, m, m === 'dab' ? dabService : undefined);
+      tuneFreq(m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : freq, m, m === 'dab' ? dabService : undefined);
     }
+  };
+
+  const changeNfmFreq = (e) => {
+    setNfmFreq(e.target.value);
+    if (playingRef.current && mode === 'nfm') tuneFreq(e.target.value, 'nfm');
   };
 
   const changeGain = (e) => {
     const g = Number(e.target.value);
     setGain(String(g));
     if (playingRef.current) send({ op: 'gain', gain: g });
+  };
+
+  const changeSquelch = (e) => {
+    const v = Number(e.target.value) / 100;
+    setSquelch(v);
+    send({ op: 'squelch', level: v });
   };
 
   const changeVolume = (e) => {
@@ -276,8 +306,9 @@ export default function App() {
 
   const addPreset = () => {
     const name = newName.trim();
-    if (!name || !parseFloat(freq)) return;
-    setPresets((p) => [...p, { name, freq }]);
+    const cur = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : freq;
+    if (!name || !parseFloat(cur)) return;
+    setPresets((p) => [...p, { name, freq: cur, mode, service: mode === 'dab' ? dabService || undefined : undefined }]);
     setNewName('');
   };
 
@@ -286,13 +317,18 @@ export default function App() {
   };
 
   const selectPreset = (p) => {
-    setFreq(p.freq);
-    setMode('fm');
+    const m = p.mode || 'fm';
+    if (m === 'nfm') setNfmFreq(p.freq);
+    else if (m === 'dab') {
+      setDabFreq(p.freq);
+      setDabService(p.service || '');
+    } else setFreq(p.freq);
+    if (m !== mode) loadPresets(m);
+    setMode(m);
     if (playingRef.current) {
-      tuneFreq(p.freq, 'fm');
+      tuneFreq(p.freq, m, p.service);
     } else {
-      setMode('fm');
-      play(p.freq);
+      play(p.freq, m, p.service);
     }
   };
 
@@ -308,6 +344,12 @@ export default function App() {
           onClick={() => changeMode('fm')}
         >
           FM
+        </button>
+        <button
+          className={mode === 'nfm' ? 'active' : ''}
+          onClick={() => changeMode('nfm')}
+        >
+          NFM
         </button>
         <button
           className={mode === 'dab' ? 'active' : ''}
@@ -345,11 +387,36 @@ export default function App() {
             </div>
           </label>
 
-          {mode === 'fm' ? (
-            <label>
-              Frequency (MHz)
-              <input value={freq} onChange={changeFreq} placeholder="95.1" inputMode="decimal" />
-            </label>
+          {mode === 'fm' || mode === 'nfm' ? (
+            <>
+              <label>
+                Frequency (MHz)
+                <input
+                  value={mode === 'nfm' ? nfmFreq : freq}
+                  onChange={mode === 'nfm' ? changeNfmFreq : changeFreq}
+                  placeholder={mode === 'nfm' ? '145.000' : '95.1'}
+                  inputMode="decimal"
+                />
+              </label>
+              {mode === 'nfm' && (
+                <label>
+                  Squelch
+                  <div className="gain-row">
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="1"
+                      value={Math.round(squelch * 100)}
+                      onChange={changeSquelch}
+                    />
+                    <span className="gain-value">
+                      {squelch === 0 ? 'Off' : `${Math.round(squelch * 100)}`}
+                    </span>
+                  </div>
+                </label>
+              )}
+            </>
           ) : (
             <>
               <label>
@@ -409,7 +476,10 @@ export default function App() {
               <div className="station" key={i}>
                 <button className="station-tune" onClick={() => selectPreset(p)}>
                   <span className="station-name">{p.name}</span>
-                  <span className="station-freq">{p.freq} MHz</span>
+                  <span className="station-freq">
+                    {(p.mode === 'dab' && p.service ? `${p.service} · ` : '')}
+                    {p.mode === 'dab' ? `${dabChannelForMhz(parseFloat(p.freq) || 216.928)[0]} (${p.freq} MHz)` : `${p.freq} MHz`}
+                  </span>
                 </button>
                 <button className="station-del" onClick={() => removePreset(i)} title="Delete">
                   ✕
@@ -427,13 +497,17 @@ export default function App() {
             </div>
           </div>
 
-          {mode === 'fm' ? (
+          {mode === 'fm' || mode === 'nfm' ? (
             <div className="waterfall-wrap">
               <div className="waterfall-title">
                 Spectrum {centerHz ? `±${(span / 2 / 1e6).toFixed(2)} MHz around ${fmtMHz(centerHz)}` : '—'}
               </div>
               <div className="waterfall-canvas">
-                <SpectrumAnalyzer ref={spectrumRef} bins={bins} height={160} />
+                {mode === 'fm' ? (
+                  <SpectrumAnalyzer ref={spectrumRef} bins={bins} height={160} />
+                ) : (
+                  <Waterfall ref={spectrumRef} bins={bins} height={160} />
+                )}
                 {centerHz && <div className="waterfall-marker" />}
               </div>
               <div className="waterfall-axis">

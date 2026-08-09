@@ -43,6 +43,7 @@ const DEFAULT_FREQ = Number(process.env.RTL_TCP_FREQ || 97_900_000);
 const DEFAULT_GAIN = process.env.RTL_TCP_GAIN !== undefined ? Number(process.env.RTL_TCP_GAIN) : 40;
 const DEFAULT_MODE = process.env.RTL_TCP_MODE || 'fm';
 const DAB_DEFAULT_FREQ = Number(process.env.RTL_TCP_DAB_FREQ || 216_928_000);
+const NFM_DEFAULT_FREQ = Number(process.env.RTL_TCP_NFM_FREQ || 145_000_000);
 const DAB_SAMPLE_RATE = 2_048_000;
 const DIST_DIR = path.join(__dirname, '..', 'client', 'dist');
 
@@ -72,7 +73,7 @@ function statusMsg(s) {
     type: 'status',
     ...st,
     logo: st.mode === 'dab' ? logoFor(st.service, st.sid) : null,
-    span: DEFAULT_SAMPLE_RATE,
+    span: st.span ?? DEFAULT_SAMPLE_RATE,
     spanDab: DAB_SAMPLE_RATE,
     bins: DEFAULT_BINS,
   };
@@ -115,6 +116,8 @@ app.get('/api/config', (req, res) => {
     gain: DEFAULT_GAIN,
     mode: DEFAULT_MODE,
     dabFreq: DAB_DEFAULT_FREQ,
+    nfmFreq: NFM_DEFAULT_FREQ,
+    squelch: 0,
   });
 });
 
@@ -149,6 +152,9 @@ wss.on('connection', (ws) => {
       const mode = msg.mode || 'fm';
       const service = msg.service !== undefined && msg.service !== '' ? String(msg.service) : null;
       if (!Number.isFinite(freq) || freq <= 0) return;
+      if (msg.squelch !== undefined && Number.isFinite(Number(msg.squelch))) {
+        manager.setSquelch(Number(msg.squelch));
+      }
       clearSlides();
       try {
         if (
@@ -169,6 +175,9 @@ wss.on('connection', (ws) => {
     } else if (msg.op === 'gain') {
       const gain = msg.gain !== undefined && msg.gain !== '' ? Number(msg.gain) : DEFAULT_GAIN;
       if (Number.isFinite(gain)) manager.setGain(gain);
+    } else if (msg.op === 'squelch') {
+      const level = msg.level !== undefined ? Number(msg.level) : 0;
+      if (Number.isFinite(level)) manager.setSquelch(level);
     } else if (msg.op === 'stop') {
       clearSlides();
       manager.stop();
