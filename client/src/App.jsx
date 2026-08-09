@@ -41,6 +41,7 @@ export default function App() {
   const [mode, setMode] = useState('fm');
   const [freq, setFreq] = useState('');
   const [nfmFreq, setNfmFreq] = useState('145.000');
+  const [amFreq, setAmFreq] = useState('7.100');
   const [dabFreq, setDabFreq] = useState('216.928');
   const [gain, setGain] = useState('');
   const [squelch, setSquelch] = useState(0);
@@ -85,6 +86,7 @@ export default function App() {
         if (cfg.mode) setMode(cfg.mode);
         if (cfg.dabFreq) setDabFreq((cfg.dabFreq / 1e6).toFixed(3));
         if (cfg.nfmFreq) setNfmFreq((cfg.nfmFreq / 1e6).toFixed(3));
+        if (cfg.amFreq) setAmFreq((cfg.amFreq / 1e6).toFixed(3));
         if (cfg.squelch !== undefined) setSquelch(cfg.squelch);
         loadPresets(cfg.mode || 'fm');
       })
@@ -95,6 +97,7 @@ export default function App() {
         setGain('40');
         setDabFreq('216.928');
         setNfmFreq('145.000');
+        setAmFreq('7.100');
         setMode('fm');
         loadPresets('fm');
       });
@@ -192,7 +195,7 @@ export default function App() {
     setBusy(true);
     try {
       const m = modeOverride || mode;
-      const target = freqOverride ?? (m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : freq);
+      const target = freqOverride ?? (m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : m === 'am' ? amFreq : freq);
       const player = await ensurePlayer();
       player.setVolume(volume);
       let ws = wsRef.current;
@@ -278,13 +281,18 @@ export default function App() {
     setMode(m);
     loadPresets(m);
     if (playingRef.current) {
-      tuneFreq(m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : freq, m, m === 'dab' ? dabService : undefined);
+      tuneFreq(m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : m === 'am' ? amFreq : freq, m, m === 'dab' ? dabService : undefined);
     }
   };
 
   const changeNfmFreq = (e) => {
     setNfmFreq(e.target.value);
     if (playingRef.current && mode === 'nfm') tuneFreq(e.target.value, 'nfm');
+  };
+
+  const changeAmFreq = (e) => {
+    setAmFreq(e.target.value);
+    if (playingRef.current && mode === 'am') tuneFreq(e.target.value, 'am');
   };
 
   const changeGain = (e) => {
@@ -306,7 +314,7 @@ export default function App() {
 
   const addPreset = () => {
     const name = newName.trim();
-    const cur = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : freq;
+    const cur = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : freq;
     if (!name || !parseFloat(cur)) return;
     setPresets((p) => [...p, { name, freq: cur, mode, service: mode === 'dab' ? dabService || undefined : undefined }]);
     setNewName('');
@@ -319,6 +327,7 @@ export default function App() {
   const selectPreset = (p) => {
     const m = p.mode || 'fm';
     if (m === 'nfm') setNfmFreq(p.freq);
+    else if (m === 'am') setAmFreq(p.freq);
     else if (m === 'dab') {
       setDabFreq(p.freq);
       setDabService(p.service || '');
@@ -350,6 +359,12 @@ export default function App() {
           onClick={() => changeMode('nfm')}
         >
           NFM
+        </button>
+        <button
+          className={mode === 'am' ? 'active' : ''}
+          onClick={() => changeMode('am')}
+        >
+          AM
         </button>
         <button
           className={mode === 'dab' ? 'active' : ''}
@@ -387,14 +402,14 @@ export default function App() {
             </div>
           </label>
 
-          {mode === 'fm' || mode === 'nfm' ? (
+          {mode === 'fm' || mode === 'nfm' || mode === 'am' ? (
             <>
               <label>
                 Frequency (MHz)
                 <input
-                  value={mode === 'nfm' ? nfmFreq : freq}
-                  onChange={mode === 'nfm' ? changeNfmFreq : changeFreq}
-                  placeholder={mode === 'nfm' ? '145.000' : '95.1'}
+                  value={mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : freq}
+                  onChange={mode === 'nfm' ? changeNfmFreq : mode === 'am' ? changeAmFreq : changeFreq}
+                  placeholder={mode === 'nfm' ? '145.000' : mode === 'am' ? '7.100' : '95.1'}
                   inputMode="decimal"
                 />
               </label>
@@ -497,7 +512,7 @@ export default function App() {
             </div>
           </div>
 
-          {mode === 'fm' || mode === 'nfm' ? (
+          {mode === 'fm' || mode === 'nfm' || mode === 'am' ? (
             <div className="waterfall-wrap">
               <div className="waterfall-title">
                 Spectrum {centerHz ? `±${(span / 2 / 1e6).toFixed(2)} MHz around ${fmtMHz(centerHz)}` : '—'}

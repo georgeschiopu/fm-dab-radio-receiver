@@ -1,7 +1,7 @@
 import net from 'node:net';
 import fs from 'node:fs';
 import { RtlTcpClient, CMD, DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
-import { FmDecoder, LinearResampler } from './dsp.js';
+import { FmDecoder, AmDecoder, LinearResampler } from './dsp.js';
 import { SpectrumAnalyzer, DEFAULT_BINS } from './spectrum.js';
 import { channelBlockForFreq, channelFreqKHz, DabReceiver } from './dab.js';
 
@@ -291,6 +291,72 @@ function testNfmAgcSquelch() {
   console.log('OK: NFM AGC normalizes level; squelch is off by default and mutes noise when enabled');
 }
 
+// AM: carrier at +cOff kHz, amplitude-modulated by a 1 kHz tone at 50%.
+function synthAmIq(samples, { fs = 1_000_000, cOff = 100_000, modFreq = 1000, depth = 0.5 } = {}) {
+  const buf = Buffer.alloc(samples * 2);
+  for (let s = 0; s < samples; s++) {
+    const t = s / fs;
+    const env = 0.6 * (1 + depth * Math.sin(2 * Math.PI * modFreq * t));
+    const ph = 2 * Math.PI * cOff * t;
+    buf[s * 2] = 128 + Math.round(env * Math.cos(ph) * 110);
+    buf[s * 2 + 1] = 128 + Math.round(env * Math.sin(ph) * 110);
+  }
+  return buf;
+}
+
+function testAmDsp() {
+  console.log('--- am dsp test ---');
+  const samples = 2_000_000; // 2 s at 1 Msps
+  const iq = synthAmIq(samples);
+  const dec = new AmDecoder({ inRate: 1_000_000, audioRate: 50_000, audioCutoff: 5_000, gain: 1, taps: 512, outputRate: 48_000, agc: true });
+  const chunks = [];
+  const CH = 60000;
+  for (let i = 0; i < iq.length; i += CH * 2) {
+    chunks.push(dec.process(iq.subarray(i, Math.min(i + CH * 2, iq.length))));
+  }
+  const total = chunks.reduce((a, c) => a + c.length, 0);
+  const expectedOut = Math.floor((samples / 20) * (48_000 / 50_000));
+  assert(Math.abs(total - expectedOut) <= 2, `output length ${total} != ~${expectedOut}`);
+
+  const pcm = new Int16Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    pcm.set(c, off);
+    off += c.length;
+  }
+  writeWav('/tmp/am_test.wav', pcm, 48000);
+
+  const N = pcm.length;
+  let sumSq = 0;
+  for (let i = 0; i < N; i++) {
+    const y = pcm[i] / 32768;
+    sumSq += y * y;
+  }
+  const totalPow = sumSq / N;
+  const rms = Math.sqrt(totalPow);
+  const toneAt = (freq) => {
+    let tc = 0;
+    let ts = 0;
+    for (let i = 0; i < N; i++) {
+      const w = (2 * Math.PI * freq * i) / 48000;
+      tc += (pcm[i] / 32768) * Math.cos(w);
+      ts += (pcm[i] / 32768) * Math.sin(w);
+    }
+    return ((tc * tc + ts * ts) / N) / N / totalPow;
+  };
+  const ratio = toneAt(1000);
+  console.log(`  output samples: ${N}, rms: ${rms.toFixed(4)}, 1kHz tone ratio: ${ratio.toFixed(3)}`);
+  console.log(`  tone ratios @500Hz=${toneAt(500).toFixed(3)} @1000Hz=${ratio.toFixed(3)} @1500Hz=${toneAt(1500).toFixed(3)}`);
+  console.log('  wav written: /tmp/am_test.wav');
+
+  assert(rms > 0.01, 'audio too quiet (rms too low)');
+  assert(rms < 0.5, 'audio clipping (rms too high)');
+  assert(ratio > 0.45, `1kHz tone not dominant (ratio=${ratio.toFixed(3)})`);
+  assert(ratio > toneAt(500) * 5, 'unexpected energy at 500Hz');
+  assert(ratio > toneAt(1500) * 5, 'unexpected energy at 1500Hz');
+  console.log('OK: AM demodulated output is a clean 1kHz tone');
+}
+
 function testResampler() {
   console.log('--- resampler test ---');
   const n = 100_000; // 2 s at 50 kHz
@@ -424,6 +490,7 @@ testProtocol()
   .then(testDsp)
   .then(testNfmDsp)
   .then(testNfmAgcSquelch)
+  .then(testAmDsp)
   .then(testResampler)
   .then(testSpectrum)
   .then(testDabPcmConversion)

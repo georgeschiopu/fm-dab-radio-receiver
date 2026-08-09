@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { RtlTcpClient, DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
-import { FmDecoder } from './dsp.js';
+import { FmDecoder, AmDecoder } from './dsp.js';
 import { SpectrumAnalyzer } from './spectrum.js';
 import { DabReceiver } from './dab.js';
 
@@ -9,6 +9,12 @@ const NFM_AUDIO_RATE = 50_000; // integer decimation of 1 MHz; resampled to 48k 
 const NFM_OUTPUT_RATE = 48_000; // final rate sent to the browser (matches AudioContext)
 const NFM_AUDIO_CUTOFF = 4_000; // voice-grade NFM bandwidth
 const NFM_GAIN = 1; // AGC normalizes level; this is just the start gain
+
+const AM_SAMPLE_RATE = 1_000_000; // same span as NFM so the waterfall is shared
+const AM_AUDIO_RATE = 50_000; // integer decimation of 1 MHz; resampled to 48k server-side
+const AM_OUTPUT_RATE = 48_000; // final rate sent to the browser (matches AudioContext)
+const AM_AUDIO_CUTOFF = 5_000; // HF AM voice is a bit wider than NFM
+const AM_GAIN = 1; // AGC normalizes level; this is just the start gain
 
 export class AudioStreamManager extends EventEmitter {
   constructor() {
@@ -63,7 +69,7 @@ export class AudioStreamManager extends EventEmitter {
       return;
     }
 
-    // FM / NFM mode: direct rtl_tcp IQ handled in-process
+    // FM / NFM / AM mode: direct rtl_tcp IQ handled in-process
     if (mode === 'nfm') {
       this.decoder = new FmDecoder({
         inRate: NFM_SAMPLE_RATE,
@@ -76,16 +82,26 @@ export class AudioStreamManager extends EventEmitter {
         agc: true,
         squelch: this.squelch,
       });
+    } else if (mode === 'am') {
+      this.decoder = new AmDecoder({
+        inRate: AM_SAMPLE_RATE,
+        audioRate: AM_AUDIO_RATE,
+        audioCutoff: AM_AUDIO_CUTOFF,
+        gain: AM_GAIN,
+        taps: 512,
+        outputRate: AM_OUTPUT_RATE,
+        agc: true,
+      });
     } else {
       this.decoder = new FmDecoder();
     }
     this.decoder.reset();
-    this.spec = new SpectrumAnalyzer({ sampleRate: mode === 'nfm' ? NFM_SAMPLE_RATE : DEFAULT_SAMPLE_RATE });
+    this.spec = new SpectrumAnalyzer({ sampleRate: mode === 'nfm' || mode === 'am' ? AM_SAMPLE_RATE : DEFAULT_SAMPLE_RATE });
     this.spec.onSpectrum = (line) => {
       if (this.onSpectrum) this.onSpectrum(line);
     };
     this.spec.reset();
-    const rtl = new RtlTcpClient({ host, port, sampleRate: mode === 'nfm' ? NFM_SAMPLE_RATE : DEFAULT_SAMPLE_RATE });
+    const rtl = new RtlTcpClient({ host, port, sampleRate: mode === 'nfm' || mode === 'am' ? AM_SAMPLE_RATE : DEFAULT_SAMPLE_RATE });
     this.rtl = rtl;
     rtl.on('iq', (chunk) => this._onIq(chunk));
     rtl.on('disconnect', () => {
@@ -109,14 +125,14 @@ export class AudioStreamManager extends EventEmitter {
   _onIq(chunk) {
     const pcm = this.decoder.process(chunk);
     this.spec.push(chunk);
-    // For NFM the whole 1 MHz band is mostly noise, so the raw bandRms is a
+    // For NFM/AM the whole 1 MHz band is mostly noise, so the raw bandRms is a
     // poor signal indicator; the demodulated audio level (post-AGC/gate) is
     // proportional to the carrier lock instead.
     const signal =
-      this.mode === 'nfm'
+      this.mode === 'nfm' || this.mode === 'am'
         ? Math.min(1, this.decoder.outputRms / 0.18)
         : this.decoder.bandRms;
-    const audio = this.mode === 'nfm' ? this.decoder.outputRms : this.decoder.audioRms;
+    const audio = this.mode === 'nfm' || this.mode === 'am' ? this.decoder.outputRms : this.decoder.audioRms;
     this.stats = { signal, audio };
     if (this.onPcm) this.onPcm(pcm);
   }
