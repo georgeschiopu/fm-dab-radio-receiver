@@ -8,6 +8,14 @@ import { AudioStreamManager } from './audioStream.js';
 import { SlideWatcher } from './slides.js';
 import { DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
 import { DEFAULT_BINS } from './spectrum.js';
+import { getPresets, setPresets } from './presets.js';
+import {
+  registerUser,
+  loginUser,
+  cookieUser,
+  SESSION_COOKIE,
+  SESSION_TTL_MS,
+} from './auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -51,6 +59,16 @@ const DIST_DIR = path.join(__dirname, '..', 'client', 'dist');
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
+
+app.use(express.json());
+
+// Everything under /api (except register/login) requires a valid session.
+function requireAuth(req, res, next) {
+  const user = cookieUser(req);
+  if (!user) return res.status(401).json({ error: 'Not authenticated' });
+  req.user = user;
+  next();
+}
 
 const manager = new AudioStreamManager();
 manager.on('status', (s) => broadcast(statusMsg(s)));
@@ -109,7 +127,32 @@ function broadcast(msg) {
   }
 }
 
-app.get('/api/config', (req, res) => {
+app.post('/api/register', (req, res) => {
+  const { username, password } = req.body || {};
+  const r = registerUser(username, password);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.cookie(SESSION_COOKIE, r.token, { httpOnly: true, sameSite: 'lax', maxAge: SESSION_TTL_MS });
+  res.json({ ok: true, username: r.username });
+});
+
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body || {};
+  const r = loginUser(username, password);
+  if (r.error) return res.status(401).json({ error: r.error });
+  res.cookie(SESSION_COOKIE, r.token, { httpOnly: true, sameSite: 'lax', maxAge: SESSION_TTL_MS });
+  res.json({ ok: true, username: r.username });
+});
+
+app.post('/api/logout', (req, res) => {
+  res.clearCookie(SESSION_COOKIE);
+  res.json({ ok: true });
+});
+
+app.get('/api/me', requireAuth, (req, res) => {
+  res.json({ username: req.user });
+});
+
+app.get('/api/config', requireAuth, (req, res) => {
   res.json({
     host: DEFAULT_HOST,
     port: DEFAULT_PORT,
@@ -123,6 +166,17 @@ app.get('/api/config', (req, res) => {
   });
 });
 
+app.get('/api/presets', requireAuth, (req, res) => {
+  const mode = req.query.mode || 'fm';
+  res.json({ mode, presets: getPresets(req.user, mode) });
+});
+
+app.put('/api/presets', requireAuth, (req, res) => {
+  const body = req.body || {};
+  const mode = req.query.mode || body.mode || 'fm';
+  res.json({ mode, presets: setPresets(req.user, mode, body.presets) });
+});
+
 app.use('/logos', express.static(LOGOS_DIR, { maxAge: '1h' }));
 app.use(express.static(DIST_DIR));
 app.get('*', (req, res, next) => {
@@ -134,7 +188,13 @@ app.get('*', (req, res, next) => {
   });
 });
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  const user = cookieUser(req);
+  if (!user) {
+    ws.close(1008, 'Not authenticated');
+    return;
+  }
+  ws.user = user;
   ws.isAlive = true;
   ws.on('pong', () => (ws.isAlive = true));
   ws.send(JSON.stringify(statusMsg()));

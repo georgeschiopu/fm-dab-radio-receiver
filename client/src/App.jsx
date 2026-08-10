@@ -3,8 +3,8 @@ import { AudioPlayer } from './audio.js';
 import SpectrumAnalyzer from './SpectrumAnalyzer.jsx';
 import Waterfall from './Waterfall.jsx';
 
-// Presets are stored per mode so FM / NFM station lists stay separate.
-const presetKey = (m) => `sdr-${m}-stations`;
+// Presets are stored per mode and per user so FM / NFM station lists stay separate.
+const presetKey = (user, m) => `sdr-${user}-${m}-stations`;
 
 const fmtMHz = (hz) => `${(hz / 1e6).toFixed(2)} MHz`;
 
@@ -60,6 +60,13 @@ export default function App() {
   const [span, setSpan] = useState(288_000);
   const [bins, setBins] = useState(256);
   const [centerHz, setCenterHz] = useState(null);
+  const [user, setUser] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authMode, setAuthMode] = useState('login');
+  const [authName, setAuthName] = useState('');
+  const [authPass, setAuthPass] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
   const [tuneStep, setTuneStep] = useState(10);
   const [knobAngle, setKnobAngle] = useState(0);
 
@@ -67,6 +74,7 @@ export default function App() {
   const playerRef = useRef(null);
   const spectrumRef = useRef(null);
   const playingRef = useRef(false);
+  const presetsModeRef = useRef(null);
   const knobRef = useRef(null);
   const wheelAccRef = useRef(0);
   const tuneFreqRef = useRef(null);
@@ -74,15 +82,35 @@ export default function App() {
   fineRef.current = { mode, tuneStep, nfmFreq, amFreq };
 
   const loadPresets = (m) => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(presetKey(m)) || '[]');
-      if (Array.isArray(saved)) setPresets(saved);
-    } catch {
-      /* ignore */
-    }
+    presetsModeRef.current = m;
+    fetch(`/api/presets?mode=${m}`)
+      .then((r) => {
+        if (r.status === 401) throw new Error('unauthorized');
+        return r.json();
+      })
+      .then((data) => {
+        if (presetsModeRef.current !== m) return;
+        const list = Array.isArray(data.presets) ? data.presets : [];
+        setPresets(list);
+        try {
+          localStorage.setItem(presetKey(user, m), JSON.stringify(list));
+        } catch {
+          /* ignore */
+        }
+      })
+      .catch(() => {
+        if (presetsModeRef.current !== m) return;
+        try {
+          const saved = JSON.parse(localStorage.getItem(presetKey(user, m)) || '[]');
+          if (Array.isArray(saved)) setPresets(saved);
+        } catch {
+          /* ignore */
+        }
+      });
   };
 
-  useEffect(() => {
+  const enterApp = () => {
+    setAuthChecked(true);
     fetch('/api/config')
       .then((r) => r.json())
       .then((cfg) => {
@@ -108,6 +136,19 @@ export default function App() {
         setMode('fm');
         loadPresets('fm');
       });
+  };
+
+  useEffect(() => {
+    fetch('/api/me')
+      .then((r) => {
+        if (!r.ok) throw new Error('not authenticated');
+        return r.json();
+      })
+      .then((d) => {
+        setUser(d.username);
+        enterApp();
+      })
+      .catch(() => setAuthChecked(true));
     return () => {
       playingRef.current = false;
       if (wsRef.current) wsRef.current.close();
@@ -117,10 +158,67 @@ export default function App() {
 
   const persistPresets = (m, list) => {
     try {
-      localStorage.setItem(presetKey(m), JSON.stringify(list));
+      localStorage.setItem(presetKey(user, m), JSON.stringify(list));
     } catch {
       /* ignore */
     }
+    fetch(`/api/presets?mode=${m}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ presets: list }),
+    })
+      .then((r) => {
+        if (r.status === 401) {
+          setUser(null);
+          setAuthChecked(true);
+        }
+      })
+      .catch(() => {
+        /* server unreachable: local cache kept as fallback */
+      });
+  };
+
+  const submitAuth = async (e) => {
+    e.preventDefault();
+    if (authBusy) return;
+    setAuthBusy(true);
+    setAuthError('');
+    try {
+      const res = await fetch(`/api/${authMode}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: authName, password: authPass }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAuthError(data.error || 'Request failed');
+        return;
+      }
+      setUser(data.username);
+      setAuthName('');
+      setAuthPass('');
+      enterApp();
+    } catch {
+      setAuthError('Network error');
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await fetch('/api/logout', { method: 'POST' });
+    } catch {
+      /* ignore */
+    }
+    playingRef.current = false;
+    if (wsRef.current) wsRef.current.close();
+    if (playerRef.current) playerRef.current.stop();
+    setPlaying(false);
+    setStatus('Idle');
+    setPresets([]);
+    setUser(null);
+    setAuthChecked(true);
   };
 
   const ensurePlayer = async () => {
@@ -406,9 +504,78 @@ export default function App() {
     return true;
   };
 
+  if (!authChecked) {
+    return (
+      <div className="card auth-card">
+        <h1>SDR Receiver</h1>
+        <div className="auth-loading">Checking session…</div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="card auth-card">
+        <h1>SDR Receiver</h1>
+        <form className="auth-form" onSubmit={submitAuth}>
+          <div className="auth-tabs">
+            <button
+              type="button"
+              className={authMode === 'login' ? 'active' : ''}
+              onClick={() => {
+                setAuthMode('login');
+                setAuthError('');
+              }}
+            >
+              Login
+            </button>
+            <button
+              type="button"
+              className={authMode === 'register' ? 'active' : ''}
+              onClick={() => {
+                setAuthMode('register');
+                setAuthError('');
+              }}
+            >
+              Register
+            </button>
+          </div>
+          <label>
+            Username
+            <input
+              value={authName}
+              onChange={(e) => setAuthName(e.target.value)}
+              autoFocus
+              autoComplete="username"
+            />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
+              value={authPass}
+              onChange={(e) => setAuthPass(e.target.value)}
+              autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
+            />
+          </label>
+          {authError && <div className="auth-error">{authError}</div>}
+          <button className="primary" type="submit" disabled={authBusy}>
+            {authBusy ? 'Please wait…' : authMode === 'login' ? 'Login' : 'Create account'}
+          </button>
+        </form>
+      </div>
+    );
+  }
+
   return (
     <div className="card">
-      <h1>SDR Receiver</h1>
+      <div className="topbar">
+        <h1>SDR Receiver</h1>
+        <div className="topbar-user">
+          <span>{user}</span>
+          <button onClick={logout}>Logout</button>
+        </div>
+      </div>
 
       <div className="mode-toggle">
         <button

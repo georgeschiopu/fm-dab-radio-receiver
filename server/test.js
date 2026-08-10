@@ -4,6 +4,17 @@ import { RtlTcpClient, CMD, DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
 import { FmDecoder, AmDecoder, LinearResampler } from './dsp.js';
 import { SpectrumAnalyzer, DEFAULT_BINS } from './spectrum.js';
 import { channelBlockForFreq, channelFreqKHz, DabReceiver } from './dab.js';
+import {
+  getPresets,
+  setPresets,
+  setPresetsFileForTests,
+} from './presets.js';
+import {
+  registerUser,
+  loginUser,
+  sessionUser,
+  setUsersFileForTests,
+} from './auth.js';
 
 const assert = (cond, msg) => {
   if (!cond) {
@@ -553,6 +564,75 @@ function testDabChannelMap() {
   console.log(`OK: ${cases.length} channel mappings + roundtrip correct`);
 }
 
+function testPresetStore() {
+  console.log('--- preset store test ---');
+  const file = `/tmp/opencode-presets-${process.pid}.json`;
+  setPresetsFileForTests(file);
+  try {
+    assert(Array.isArray(getPresets('alice', 'fm')) && getPresets('alice', 'fm').length === 0, 'empty fm presets');
+    const added = setPresets('alice', 'fm', [
+      { name: 'Radio1', freq: '95.1', service: 'Radio One' },
+      { name: '', freq: '99.9' },
+      null,
+      { name: 'X'.repeat(100), freq: '98.0' },
+    ]);
+    assert(added.length === 2, `junk filtered, got ${added.length}`);
+    assert(added[0].name === 'Radio1' && added[0].service === 'Radio One', 'clean preset kept');
+    assert(added[1].name.length === 80, 'name truncated to 80 chars');
+    assert(getPresets('alice', 'nfm').length === 0, 'nfm unaffected');
+    assert(getPresets('bob', 'fm').length === 0, 'other user unaffected');
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert(stored.alice.fm.length === 2 && stored.alice.fm[0].name === 'Radio1', 'file persisted on disk');
+    setPresets('alice', 'am', [{ name: 'AM1', freq: '7.1' }]);
+    setPresets('bob', 'fm', [{ name: 'Bob FM', freq: '88.8' }]);
+    const aliceAm = getPresets('alice', 'am');
+    assert(aliceAm.length === 1 && aliceAm[0].mode === 'am', 'mode forced on entry');
+    assert(getPresets('bob', 'fm').length === 1, 'bob has his own list');
+    assert(getPresets('alice', 'fm').length === 2, 'alice list intact after bob saved');
+  } finally {
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      /* ignore */
+    }
+  }
+  console.log('OK: preset store is per-user, roundtrip + sanitize correct');
+}
+
+function testAuth() {
+  console.log('--- auth test ---');
+  const file = `/tmp/opencode-users-${process.pid}.json`;
+  setUsersFileForTests(file);
+  try {
+    const reg = registerUser('Alice', 'secret123');
+    assert(reg.ok && reg.username === 'alice' && typeof reg.token === 'string', 'register succeeds + token');
+    const dup = registerUser('ALICE', 'other123');
+    assert(!dup.ok && dup.error, 'duplicate username rejected (case-insensitive)');
+    const badName = registerUser('a', 'secret123');
+    assert(!badName.ok, 'too-short username rejected');
+    const shortPass = registerUser('bob', '123');
+    assert(!shortPass.ok, 'too-short password rejected');
+    const wrongPass = loginUser('alice', 'nope123');
+    assert(!wrongPass.ok, 'wrong password rejected');
+    const missing = loginUser('nobody', 'secret123');
+    assert(!missing.ok, 'unknown user rejected');
+    const login = loginUser('Alice', 'secret123');
+    assert(login.ok && login.username === 'alice', 'login succeeds');
+    assert(sessionUser(login.token) === 'alice', 'token verifies to username');
+    assert(sessionUser(`${login.token}x`) === null, 'tampered token rejected');
+    assert(sessionUser(login.token + '.extra') === null, 'malformed token rejected');
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert(stored.alice && stored.alice.hash !== 'secret123', 'password stored hashed, never plaintext');
+  } finally {
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      /* ignore */
+    }
+  }
+  console.log('OK: register/login/token verify + hashing correct');
+}
+
 testProtocol()
   .then(testDsp)
   .then(testNfmDsp)
@@ -563,6 +643,8 @@ testProtocol()
   .then(testSpectrum)
   .then(testDabPcmConversion)
   .then(testDabChannelMap)
+  .then(testPresetStore)
+  .then(testAuth)
   .then(() => {
     console.log('\nAll tests passed.');
     process.exitCode = 0;
