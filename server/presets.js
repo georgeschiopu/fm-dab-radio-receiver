@@ -11,8 +11,9 @@ const DEFAULT_FILE = path.join(
 );
 
 // Saved stations live in a JSON file on the server so every client (on any
-// computer) sees the same list. Point PRESETS_FILE at a mounted volume to keep
-// them across container rebuilds.
+// computer) sees the same list. Keyed by username so each user has their own
+// stations. Point PRESETS_FILE at a mounted volume to keep them across
+// container rebuilds.
 let cache = null;
 let overrideFile = null; // test helper
 
@@ -33,18 +34,20 @@ function cleanPreset(p, mode) {
 
 function load() {
   if (cache) return cache;
-  const out = empty();
   try {
     const raw = JSON.parse(fs.readFileSync(presetsFile(), 'utf8'));
-    for (const m of MODES) {
-      if (!Array.isArray(raw[m])) continue;
-      out[m] = raw[m].map((p) => cleanPreset(p, m)).filter(Boolean);
-    }
+    if (raw && typeof raw === 'object') cache = raw;
   } catch {
     /* first run / missing file: start empty */
   }
-  cache = out;
+  if (!cache || typeof cache !== 'object') cache = {};
   return cache;
+}
+
+function userPresets(user) {
+  const map = load();
+  if (!map[user] || typeof map[user] !== 'object') map[user] = empty();
+  return map[user];
 }
 
 function persist() {
@@ -53,17 +56,17 @@ function persist() {
   fs.writeFileSync(file, JSON.stringify(cache, null, 2));
 }
 
-export function getPresets(mode) {
+export function getPresets(user, mode) {
   const m = MODES.includes(mode) ? mode : 'fm';
-  return load()[m];
+  return userPresets(user)[m];
 }
 
-export function setPresets(mode, list) {
+export function setPresets(user, mode, list) {
   const m = MODES.includes(mode) ? mode : 'fm';
   const cleaned = (Array.isArray(list) ? list : [])
     .map((p) => cleanPreset(p, m))
     .filter(Boolean);
-  load()[m] = cleaned;
+  userPresets(user)[m] = cleaned;
   persist();
   return cleaned;
 }

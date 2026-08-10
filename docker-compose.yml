@@ -16,6 +16,7 @@ services:
       - RTL_TCP_DAB_FREQ=216.928e6
       # Saved stations live in this file (survives container rebuilds via volume).
       - PRESETS_FILE=/data/presets.json
+      - USERS_FILE=/data/users.json
     volumes:
       - sdr-presets:/data
     restart: unless-stopped

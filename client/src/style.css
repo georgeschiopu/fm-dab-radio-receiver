@@ -422,3 +422,64 @@ button:disabled {
 .stations .row > button {
   white-space: nowrap;
 }
+
+.auth-card {
+  width: min(380px, 96vw);
+  align-items: stretch;
+  gap: 20px;
+}
+
+.auth-loading {
+  color: #8b949e;
+  font-size: 14px;
+  text-align: center;
+  padding: 8px 0;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.auth-tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.auth-tabs button {
+  flex: 1;
+  padding: 8px;
+  font-size: 13px;
+}
+
+.auth-tabs button.active {
+  background: #1f6feb;
+  border-color: #388bfd;
+  color: #fff;
+}
+
+.auth-error {
+  font-size: 13px;
+  color: #f85149;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.topbar-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: #8b949e;
+}
+
+.topbar-user button {
+  padding: 6px 12px;
+  font-size: 13px;
+}
