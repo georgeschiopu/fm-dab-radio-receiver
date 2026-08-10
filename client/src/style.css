@@ -350,9 +350,11 @@ button:disabled {
 }
 
 .meter-db {
-  width: 52px;
+  min-width: 52px;
   text-align: right;
   color: #8b949e;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .stations {

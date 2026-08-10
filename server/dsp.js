@@ -345,3 +345,102 @@ export class FmDecoder {
     return scaled;
   }
 }
+
+// AM demodulator: complex envelope detection (sqrt(I^2 + Q^2)) at the full
+// input rate, then a DC blocker strips the carrier so the AC modulation
+// becomes the audio, which is low-passed + decimated, AGC'd, and resampled to
+// the output rate. No squelch: a missing carrier just means hiss (AGC keeps
+// it from clipping).
+export class AmDecoder {
+  constructor({
+    inRate = 1_000_000,
+    audioRate = 50_000,
+    audioCutoff = 5_000,
+    gain = 1,
+    taps = 512,
+    outputRate = 48_000,
+    agc = true,
+  } = {}) {
+    if (inRate % audioRate !== 0) throw new Error(`inRate ${inRate} must be a multiple of ${audioRate}`);
+    this.inRate = inRate;
+    this.audioRate = outputRate || audioRate;
+    this.decRate = audioRate;
+    this.m = inRate / audioRate;
+    this.dec = new FirDecimator(designLowpass(audioCutoff, inRate, taps), this.m);
+    this.dc = { R: DC_R, xp: 0, yp: 0 }; // envelope DC blocker (removes carrier)
+    this.gain = gain;
+    this.agc = agc;
+    this.agcGain = agc ? 1 : gain;
+    this.resampler = outputRate && outputRate !== audioRate ? new LinearResampler(audioRate, outputRate) : null;
+    this.bandRms = 0;
+    this.audioRms = 0;
+    this.outputRms = 0;
+  }
+
+  reset() {
+    this.dec.reset();
+    this.dc = { R: DC_R, xp: 0, yp: 0 };
+    this.bandRms = 0;
+    this.audioRms = 0;
+    this.outputRms = 0;
+    this.agcGain = this.agc ? 1 : this.gain;
+    if (this.resampler) this.resampler.reset();
+  }
+
+  // buf: Node Buffer of interleaved unsigned 8-bit I/Q at inRate.
+  // Returns a fresh Int16Array of audioRate Hz mono PCM.
+  process(buf) {
+    const n = buf.length >>> 1;
+    const env = new Float64Array(n);
+    const { R } = this.dc;
+    let xp = this.dc.xp;
+    let yp = this.dc.yp;
+    let bandSum = 0;
+    for (let s = 0; s < n; s++) {
+      const xr = (buf[s * 2] - 127.5) / 127.5;
+      const xi = (buf[s * 2 + 1] - 127.5) / 127.5;
+      const mag = Math.sqrt(xr * xr + xi * xi);
+      bandSum += xr * xr + xi * xi;
+      const y = mag - xp + R * yp; // high-pass the envelope to remove the carrier DC
+      env[s] = y;
+      xp = mag;
+      yp = y;
+    }
+    this.dc.xp = xp;
+    this.dc.yp = yp;
+    this.bandRms = Math.sqrt(bandSum / (n * 2));
+
+    const a = this.dec.processReal(env);
+
+    let audioSum = 0;
+    for (let k = 0; k < a.length; k++) audioSum += a[k] * a[k];
+    this.audioRms = Math.sqrt(audioSum / Math.max(1, a.length));
+
+    // AGC: same normalizing loop as the NFM path.
+    let g = this.gain;
+    if (this.agc) {
+      const target = AGC_TARGET / Math.max(this.audioRms, 1e-4);
+      const coeff = target < this.agcGain ? AGC_ATTACK : AGC_RELEASE;
+      this.agcGain += (target - this.agcGain) * coeff;
+      g = Math.min(this.agcGain, AGC_MAX_GAIN);
+    }
+
+    let out = a;
+    if (this.resampler) out = this.resampler.process(a);
+
+    const scaled = new Int16Array(out.length);
+    const gg = g * 32767;
+    for (let k = 0; k < out.length; k++) {
+      let v = out[k] * gg;
+      if (v > 32767) v = 32767;
+      else if (v < -32768) v = -32768;
+      scaled[k] = v;
+    }
+
+    let outSum = 0;
+    for (let k = 0; k < scaled.length; k++) outSum += (scaled[k] / 32768) ** 2;
+    this.outputRms = Math.sqrt(outSum / Math.max(1, scaled.length));
+
+    return scaled;
+  }
+}

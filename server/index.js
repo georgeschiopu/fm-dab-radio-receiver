@@ -44,6 +44,7 @@ const DEFAULT_GAIN = process.env.RTL_TCP_GAIN !== undefined ? Number(process.env
 const DEFAULT_MODE = process.env.RTL_TCP_MODE || 'fm';
 const DAB_DEFAULT_FREQ = Number(process.env.RTL_TCP_DAB_FREQ || 216_928_000);
 const NFM_DEFAULT_FREQ = Number(process.env.RTL_TCP_NFM_FREQ || 145_000_000);
+const AM_DEFAULT_FREQ = Number(process.env.RTL_TCP_AM_FREQ || 7_100_000);
 const DAB_SAMPLE_RATE = 2_048_000;
 const DIST_DIR = path.join(__dirname, '..', 'client', 'dist');
 
@@ -117,6 +118,7 @@ app.get('/api/config', (req, res) => {
     mode: DEFAULT_MODE,
     dabFreq: DAB_DEFAULT_FREQ,
     nfmFreq: NFM_DEFAULT_FREQ,
+    amFreq: AM_DEFAULT_FREQ,
     squelch: 0,
   });
 });
