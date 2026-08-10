@@ -60,11 +60,18 @@ export default function App() {
   const [span, setSpan] = useState(288_000);
   const [bins, setBins] = useState(256);
   const [centerHz, setCenterHz] = useState(null);
+  const [tuneStep, setTuneStep] = useState(10);
+  const [knobAngle, setKnobAngle] = useState(0);
 
   const wsRef = useRef(null);
   const playerRef = useRef(null);
   const spectrumRef = useRef(null);
   const playingRef = useRef(false);
+  const knobRef = useRef(null);
+  const wheelAccRef = useRef(0);
+  const tuneFreqRef = useRef(null);
+  const fineRef = useRef({ mode: 'fm', tuneStep: 10, nfmFreq: '145.000', amFreq: '7.100' });
+  fineRef.current = { mode, tuneStep, nfmFreq, amFreq };
 
   const loadPresets = (m) => {
     try {
@@ -238,7 +245,7 @@ export default function App() {
     if (spectrumRef.current) spectrumRef.current.clear();
   };
 
-  const tuneFreq = (mhz, m, service) => {
+  const tuneFreq = (mhz, m, service, { clear = true } = {}) => {
     const m2 = m || mode;
     send({
       op: 'tune',
@@ -250,10 +257,13 @@ export default function App() {
     if (m2 === 'dab') {
       setDabInfo(null);
       setDabSlide(null);
-    } else {
+    } else if (clear) {
+      // A fresh tune usually wipes the waterfall. Fine knob steps pass
+      // clear:false so the display keeps scrolling instead of restarting.
       if (spectrumRef.current) spectrumRef.current.clear();
     }
   };
+  tuneFreqRef.current = tuneFreq;
 
   const changeFreq = (e) => {
     setFreq(e.target.value);
@@ -346,6 +356,42 @@ export default function App() {
   };
 
   const dabChannel = mode === 'dab' ? dabChannelForMhz(parseFloat(dabFreq) || 216.928)[0] : null;
+
+  // Fine-tune knob (NFM/AM): a native non-passive wheel listener so
+  // preventDefault stops the page scrolling while tuning. Each ~100 wheel
+  // units is one notch that steps the frequency by `tuneStep` Hz and turns
+  // the knob by KNOB_DEG degrees.
+  const KNOB_DEG = 9;
+  useEffect(() => {
+    const el = knobRef.current;
+    if (!el) return;
+    const onWheel = (e) => {
+      e.preventDefault();
+      let d = e.deltaY;
+      if (e.deltaMode === 1) d *= 16; // line-based wheels
+      else if (e.deltaMode === 2) d *= 100; // page-based wheels
+      wheelAccRef.current += d;
+      const ticks = Math.trunc(wheelAccRef.current / 100);
+      if (ticks === 0) return;
+      wheelAccRef.current -= ticks * 100;
+      const { mode: m, tuneStep: step, nfmFreq: nf, amFreq: af } = fineRef.current;
+      const cur = m === 'nfm' ? nf : m === 'am' ? af : null;
+      if (cur === null) return;
+      const hz = Math.round(parseFloat(cur) * 1e6);
+      const next = Math.max(0, Math.min(1_000_000_000, hz - ticks * step));
+      const s = (next / 1e6).toFixed(6);
+      if (m === 'nfm') {
+        setNfmFreq(s);
+        if (playingRef.current && tuneFreqRef.current) tuneFreqRef.current(s, 'nfm', undefined, { clear: false });
+      } else {
+        setAmFreq(s);
+        if (playingRef.current && tuneFreqRef.current) tuneFreqRef.current(s, 'am', undefined, { clear: false });
+      }
+      setKnobAngle((a) => (((a + ticks * KNOB_DEG) % 360) + 360) % 360);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [mode]);
 
   const freqMatch = (a, b) => {
     const fa = parseFloat(a);
@@ -486,6 +532,28 @@ export default function App() {
               <button onClick={stop}>Stop</button>
             )}
           </div>
+
+          {(mode === 'nfm' || mode === 'am') && (
+            <div className="tune">
+              <div className="tune-label">Fine tune · {tuneStep} Hz/step</div>
+              <div className="tune-row">
+                <div className="tune-knob" ref={knobRef} title="Scroll to tune">
+                  <div className="tune-knob-indicator" style={{ transform: `rotate(${knobAngle}deg)` }} />
+                </div>
+                <div className="tune-steps">
+                  {[1, 10, 20, 50].map((s) => (
+                    <button
+                      key={s}
+                      className={`tune-step${tuneStep === s ? ' active' : ''}`}
+                      onClick={() => setTuneStep(s)}
+                    >
+                      {s}Hz
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           <label>
             Volume
