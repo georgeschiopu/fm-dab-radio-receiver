@@ -379,6 +379,15 @@ button:disabled {
   align-items: stretch;
 }
 
+.station.active .station-tune {
+  background: #1f6feb;
+  border-color: #388bfd;
+}
+
+.station.active .station-name {
+  color: #fff;
+}
+
 .station-tune {
   flex: 1;
   display: flex;

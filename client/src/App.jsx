@@ -347,6 +347,19 @@ export default function App() {
 
   const dabChannel = mode === 'dab' ? dabChannelForMhz(parseFloat(dabFreq) || 216.928)[0] : null;
 
+  const freqMatch = (a, b) => {
+    const fa = parseFloat(a);
+    const fb = parseFloat(b);
+    return Number.isFinite(fa) && Number.isFinite(fb) && Math.abs(fa - fb) < 5e-4;
+  };
+  const currentFreq = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : freq;
+  const currentService = mode === 'dab' ? dabInfo?.service || dabService || '' : '';
+  const isPlayingPreset = (p) => {
+    if (!playing || !p.freq || !freqMatch(p.freq, currentFreq)) return false;
+    if (mode === 'dab' && p.service) return currentService === p.service;
+    return true;
+  };
+
   return (
     <div className="card">
       <h1>SDR Receiver</h1>
@@ -492,7 +505,7 @@ export default function App() {
             <div className="stations-title">Stations</div>
             {presets.length === 0 && <div className="stations-empty">No saved stations yet.</div>}
             {presets.map((p, i) => (
-              <div className="station" key={i}>
+              <div className={`station${isPlayingPreset(p) ? ' active' : ''}`} key={i}>
                 <button className="station-tune" onClick={() => selectPreset(p)}>
                   <span className="station-name">{p.name}</span>
                   <span className="station-freq">
