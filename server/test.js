@@ -169,7 +169,7 @@ function testNfmDsp() {
   console.log('--- nfm dsp test ---');
   const samples = 2_000_000; // 2 s at 1 Msps
   const iq = synthFmIq(samples, { fs: 1_000_000, modFreq: 1000, dev: 2500 });
-  const dec = new FmDecoder({ inRate: 1_000_000, audioRate: 50_000, audioCutoff: 4_000, deemphasis: 0, gain: 22, taps: 512 });
+  const dec = new FmDecoder({ inRate: 1_000_000, audioRate: 50_000, audioCutoff: 4_000, deemphasis: 0, gain: 1, taps: 512, channelFirst: true, channelCutoff: 6_000 });
   const chunks = [];
   const CH = 60000;
   for (let i = 0; i < iq.length; i += CH * 2) {
@@ -256,7 +256,7 @@ function testNfmAgcSquelch() {
   const noise = synthNoiseIq(1_000_000);
 
   const mkDec = (squelch = 0) =>
-    new FmDecoder({ inRate: 1_000_000, audioRate: 50_000, audioCutoff: 4_000, deemphasis: 0, gain: 1, taps: 512, outputRate: 48_000, agc: true, squelch });
+    new FmDecoder({ inRate: 1_000_000, audioRate: 50_000, audioCutoff: 4_000, deemphasis: 0, gain: 1, taps: 512, outputRate: 48_000, agc: true, squelch, channelFirst: true, channelCutoff: 6_000 });
 
   // AGC normalizes the level for strong and weak signals.
   const decStrong = mkDec();
@@ -302,8 +302,75 @@ function testNfmAgcSquelch() {
   console.log('OK: NFM AGC normalizes level; squelch is off by default and mutes noise when enabled');
 }
 
-// AM: carrier at +cOff kHz, amplitude-modulated by a 1 kHz tone at 50%.
-function synthAmIq(samples, { fs = 1_000_000, cOff = 100_000, modFreq = 1000, depth = 0.5 } = {}) {
+// Wanted NFM carrier at 0 Hz (1 kHz audio) plus a strong FM signal at +adjOff
+// kHz (1.5 kHz audio). Before the channel filter this bleeds into the wanted
+// channel's passband; after it, the adjacent signal must be rejected.
+// Amplitudes are scaled so the composite never exceeds the int8 IQ range.
+function synthFmPlusAdjacent(samples, { fs = 1_000_000, wantedFreq = 1000, wantedDev = 2500, adjOff = 100_000, adjFreq = 1500, adjDev = 2500, adjGain = 2 } = {}) {
+  const buf = Buffer.alloc(samples * 2);
+  let pw = 0;
+  let pa = 0;
+  const a1 = 35; // wanted amplitude
+  const a2 = 35 * adjGain; // adjacent is stronger => harder rejection
+  for (let s = 0; s < samples; s++) {
+    const mw = Math.sin((2 * Math.PI * wantedFreq * s) / fs);
+    const ma = Math.sin((2 * Math.PI * adjFreq * s) / fs);
+    pw += (2 * Math.PI * wantedDev * mw) / fs;
+    pa += (2 * Math.PI * adjDev * ma) / fs;
+    const phiW = pw;
+    const phiA = (2 * Math.PI * adjOff * s) / fs + pa;
+    const xr = a1 * Math.cos(phiW) + a2 * Math.cos(phiA);
+    const xi = a1 * Math.sin(phiW) + a2 * Math.sin(phiA);
+    buf[s * 2] = 128 + Math.round(xr);
+    buf[s * 2 + 1] = 128 + Math.round(xi);
+  }
+  return buf;
+}
+
+function testNfmAdjacentRejection() {
+  console.log('--- nfm adjacent-channel rejection test ---');
+  const samples = 2_000_000; // 2 s at 1 Msps
+  const iq = synthFmPlusAdjacent(samples);
+  const dec = new FmDecoder({ inRate: 1_000_000, audioRate: 50_000, audioCutoff: 4_000, deemphasis: 0, gain: 1, taps: 512, outputRate: 48_000, agc: true, channelFirst: true, channelCutoff: 6_000 });
+  const chunks = [];
+  const CH = 60000;
+  for (let i = 0; i < iq.length; i += CH * 2) {
+    chunks.push(dec.process(iq.subarray(i, Math.min(i + CH * 2, iq.length))));
+  }
+  const total = chunks.reduce((a, c) => a + c.length, 0);
+  const pcm = new Int16Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    pcm.set(c, off);
+    off += c.length;
+  }
+  const N = pcm.length;
+  const totalPow = (() => {
+    let s = 0;
+    for (let i = 0; i < N; i++) s += (pcm[i] / 32768) ** 2;
+    return s / N;
+  })();
+  const toneAt = (freq) => {
+    let tc = 0;
+    let ts = 0;
+    for (let i = 0; i < N; i++) {
+      const w = (2 * Math.PI * freq * i) / 48000;
+      tc += (pcm[i] / 32768) * Math.cos(w);
+      ts += (pcm[i] / 32768) * Math.sin(w);
+    }
+    return ((tc * tc + ts * ts) / N) / N / totalPow;
+  };
+  const wantedRatio = toneAt(1000);
+  const adjacentRatio = toneAt(1500);
+  console.log(`  1kHz (wanted) ratio=${wantedRatio.toFixed(3)}, 1.5kHz (adjacent) ratio=${adjacentRatio.toFixed(3)}`);
+  assert(wantedRatio > 0.4, `wanted 1kHz tone not dominant (ratio=${wantedRatio.toFixed(3)})`);
+  assert(adjacentRatio < 0.03, `adjacent 1.5kHz not rejected (ratio=${adjacentRatio.toFixed(3)})`);
+  console.log('OK: strong +100 kHz adjacent station is rejected');
+}
+
+// AM: carrier at +cOff kHz (0 = centered on the tuned channel), amplitude-
+// modulated by a 1 kHz tone at 50%.
+function synthAmIq(samples, { fs = 1_000_000, cOff = 0, modFreq = 1000, depth = 0.5 } = {}) {
   const buf = Buffer.alloc(samples * 2);
   for (let s = 0; s < samples; s++) {
     const t = s / fs;
@@ -570,6 +637,7 @@ testProtocol()
   .then(testDsp)
   .then(testNfmDsp)
   .then(testNfmAgcSquelch)
+  .then(testNfmAdjacentRejection)
   .then(testAmDsp)
   .then(testResampler)
   .then(testSpectrum)
