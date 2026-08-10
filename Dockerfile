@@ -46,7 +46,7 @@ COPY --from=dab-build /src/eti-stuff/eti-cmdline/build/eti-cmdline-rtl_tcp /usr/
 COPY --from=dab-build /usr/local/bin/dablin /usr/local/bin/dablin
 COPY --from=build /app/server ./server
 COPY --from=build /app/client/dist ./client/dist
-RUN useradd -r -s /usr/sbin/nologin sdr && chown -R sdr /app
+RUN useradd -r -s /usr/sbin/nologin sdr && mkdir -p /data && chown -R sdr:sdr /data && chown -R sdr /app
 USER sdr
 EXPOSE 8080
 CMD ["node", "server/index.js"]
