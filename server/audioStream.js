@@ -7,12 +7,14 @@ import { DabReceiver } from './dab.js';
 const NFM_SAMPLE_RATE = 1_000_000; // ±0.5 MHz visible span
 const NFM_AUDIO_RATE = 50_000; // integer decimation of 1 MHz; resampled to 48k server-side
 const NFM_OUTPUT_RATE = 48_000; // final rate sent to the browser (matches AudioContext)
-const NFM_AUDIO_CUTOFF = 4_000; // voice-grade NFM bandwidth
+const NFM_IF_CUTOFF = 6_000; // channel-selectivity filter before the discriminator
+const NFM_AUDIO_CUTOFF = 4_000; // voice-grade NFM audio bandwidth
 const NFM_GAIN = 1; // AGC normalizes level; this is just the start gain
 
 const AM_SAMPLE_RATE = 1_000_000; // same span as NFM so the waterfall is shared
 const AM_AUDIO_RATE = 50_000; // integer decimation of 1 MHz; resampled to 48k server-side
 const AM_OUTPUT_RATE = 48_000; // final rate sent to the browser (matches AudioContext)
+const AM_IF_CUTOFF = 6_000; // channel-selectivity filter before the envelope detector
 const AM_AUDIO_CUTOFF = 5_000; // HF AM voice is a bit wider than NFM
 const AM_GAIN = 1; // AGC normalizes level; this is just the start gain
 
@@ -81,6 +83,8 @@ export class AudioStreamManager extends EventEmitter {
         outputRate: NFM_OUTPUT_RATE,
         agc: true,
         squelch: this.squelch,
+        channelFirst: true,
+        channelCutoff: NFM_IF_CUTOFF,
       });
     } else if (mode === 'am') {
       this.decoder = new AmDecoder({
@@ -91,6 +95,7 @@ export class AudioStreamManager extends EventEmitter {
         taps: 512,
         outputRate: AM_OUTPUT_RATE,
         agc: true,
+        channelCutoff: AM_IF_CUTOFF,
       });
     } else {
       this.decoder = new FmDecoder();
