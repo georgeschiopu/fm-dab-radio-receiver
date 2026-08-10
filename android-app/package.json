@@ -1,0 +1,22 @@
+{
+  "name": "sdr-receiver-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Android wrapper for the SDR FM receiver web app",
+  "scripts": {
+    "build": "vite build",
+    "cap:add": "cap add android",
+    "cap:sync": "cap sync android",
+    "cap:open": "cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/preferences": "^6.0.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.0",
+    "vite": "^6.0.7"
+  }
+}

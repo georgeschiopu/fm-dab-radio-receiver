@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">SDR Receiver</string>
+    <string name="title_activity_main">SDR Receiver</string>
+    <string name="package_name">com.georgeschiopu.sdrmobile</string>
+    <string name="custom_url_scheme">com.georgeschiopu.sdrmobile</string>
+</resources>
