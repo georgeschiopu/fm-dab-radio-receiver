@@ -188,6 +188,40 @@ class FirDecimator {
   }
 }
 
+// Non-decimating real FIR low-pass used to shape the audio after the
+// discriminator when the channel filter runs before it (channelFirst).
+class FirFilter {
+  constructor(taps) {
+    this.h = Float64Array.from(taps);
+    this.n = this.h.length;
+    this.buf = new Float64Array(this.n);
+    this.pos = 0;
+  }
+
+  reset() {
+    this.buf.fill(0);
+    this.pos = 0;
+  }
+
+  process(input) {
+    const { h, n } = this;
+    const buf = this.buf;
+    const out = new Float64Array(input.length);
+    for (let s = 0; s < input.length; s++) {
+      buf[this.pos] = input[s];
+      let y = 0;
+      let p = this.pos;
+      for (let k = 0; k < n; k++) {
+        y += h[k] * buf[p];
+        p = p === 0 ? n - 1 : p - 1;
+      }
+      out[s] = y;
+      this.pos = (this.pos + 1) % n;
+    }
+    return out;
+  }
+}
+
 export class FmDecoder {
   constructor({
     inRate = 288_000,
@@ -199,16 +233,35 @@ export class FmDecoder {
     outputRate = 0, // if set (!= audioRate) the audio is resampled to it
     agc = false, // automatic gain control on the demodulated audio
     squelch = 0, // 0 = off; otherwise a level in 0..1 that tightens the gate
+    channelFirst = false, // IF-selectivity: channel-filter+decimate before the discriminator
+    channelCutoff = 0, // width (Hz) of the pre-demodulator channel filter
   } = {}) {
     if (inRate % audioRate !== 0) throw new Error(`inRate ${inRate} must be a multiple of ${audioRate}`);
+    if (channelFirst && !channelCutoff) throw new Error('channelCutoff is required when channelFirst is set');
     this.inRate = inRate;
     this.audioRate = outputRate || audioRate; // final rate reported to the client
     this.decRate = audioRate; // rate the FIR decimator outputs
     this.m = inRate / audioRate;
-    this.dec = new FirDecimator(designLowpass(audioCutoff, inRate, taps), this.m);
+    this.channelFirst = channelFirst;
+    this.dec = channelFirst ? null : new FirDecimator(designLowpass(audioCutoff, inRate, taps), this.m);
+    if (channelFirst) {
+      // The channel filter is applied to the complex baseband BEFORE the
+      // discriminator, so adjacent FM signals (whose audio modulation would
+      // otherwise fall inside the post-demod low-pass) are rejected first.
+      this.ifDec = new FirDecimator(designLowpass(channelCutoff, inRate, taps), this.m);
+      this.audioFir = new FirFilter(designLowpass(audioCutoff, audioRate, taps));
+      this.ifPrev = { r: 0, i: 0 };
+    } else {
+      this.ifDec = null;
+      this.audioFir = null;
+      this.ifPrev = null;
+    }
     this.dc = { R: DC_R, xpR: 0, ypR: 0, xpI: 0, ypI: 0 };
     this.prev = { r: 0, i: 0 };
-    this.deem = { y: 0, alpha: deemphasis > 0 ? 1 - Math.exp(-1 / (inRate * deemphasis)) : 1 };
+    this.deem = {
+      y: 0,
+      alpha: deemphasis > 0 ? 1 - Math.exp(-1 / ((channelFirst ? audioRate : inRate) * deemphasis)) : 1,
+    };
     this.gain = gain;
     this.agc = agc;
     this.squelch = 0;
@@ -241,9 +294,12 @@ export class FmDecoder {
   }
 
   reset() {
-    this.dec.reset();
+    if (this.dec) this.dec.reset();
+    if (this.ifDec) this.ifDec.reset();
+    if (this.audioFir) this.audioFir.reset();
     this.dc = { R: DC_R, xpR: 0, ypR: 0, xpI: 0, ypI: 0 };
     this.prev = { r: 0, i: 0 };
+    this.ifPrev = this.ifPrev ? { r: 0, i: 0 } : null;
     this.deem = { y: 0, alpha: this.deem.alpha };
     this.bandRms = 0;
     this.audioRms = 0;
@@ -260,12 +316,9 @@ export class FmDecoder {
     const n = buf.length >>> 1;
     const r = new Float64Array(n);
     const i = new Float64Array(n);
-    const m = new Float64Array(n);
     const { R } = this.dc;
     let xpR = this.dc.xpR, ypR = this.dc.ypR;
     let xpI = this.dc.xpI, ypI = this.dc.ypI;
-    let pr = this.prev.r;
-    let pi = this.prev.i;
     let bandSum = 0;
     for (let s = 0; s < n; s++) {
       const xr = (buf[s * 2] - 127.5) / 127.5;
@@ -277,22 +330,46 @@ export class FmDecoder {
       xpR = xr; ypR = yr;
       xpI = xi; ypI = yi;
       bandSum += yr * yr + yi * yi;
-
-      const cross = yr * pi - yi * pr;
-      const dot = yr * pr + yi * pi;
-      m[s] = Math.atan2(cross, dot);
-      pr = yr;
-      pi = yi;
     }
     this.dc.xpR = xpR; this.dc.ypR = ypR;
     this.dc.xpI = xpI; this.dc.ypI = ypI;
-    this.prev.r = pr;
-    this.prev.i = pi;
     this.bandRms = Math.sqrt(bandSum / (n * 2));
+
+    // Discriminate only the wanted channel. When channelFirst is set the full
+    // band is channel-filtered + decimated first, so an adjacent FM carrier's
+    // audio modulation (which would otherwise sit inside the 0..audioCutoff
+    // passband of the post-demod low-pass) is removed before demodulation.
+    let m;
+    if (this.channelFirst) {
+      const c = this.ifDec.process(r, i);
+      m = new Float64Array(c.r.length);
+      let pr = this.ifPrev.r;
+      let pi = this.ifPrev.i;
+      for (let k = 0; k < c.r.length; k++) {
+        const cr = c.r[k];
+        const ci = c.i[k];
+        m[k] = Math.atan2(cr * pi - ci * pr, cr * pr + ci * pi);
+        pr = cr;
+        pi = ci;
+      }
+      this.ifPrev.r = pr;
+      this.ifPrev.i = pi;
+    } else {
+      m = new Float64Array(n);
+      let pr = this.prev.r;
+      let pi = this.prev.i;
+      for (let s = 0; s < n; s++) {
+        m[s] = Math.atan2(r[s] * pi - i[s] * pr, r[s] * pr + i[s] * pi);
+        pr = r[s];
+        pi = i[s];
+      }
+      this.prev.r = pr;
+      this.prev.i = pi;
+    }
 
     const alpha = this.deem.alpha;
     let y = this.deem.y;
-    for (let s = 0; s < n; s++) {
+    for (let s = 0; s < m.length; s++) {
       y = m[s] * alpha + y * (1 - alpha);
       m[s] = y;
     }
@@ -301,13 +378,13 @@ export class FmDecoder {
     // Squelch: count unlocked-phase noise jumps in the discriminator output.
     if (this.squelch) {
       let jumps = 0;
-      for (let s = 0; s < n; s++) if (m[s] > SQUELCH_RAD || m[s] < -SQUELCH_RAD) jumps++;
-      const ratio = jumps / n;
+      for (let s = 0; s < m.length; s++) if (m[s] > SQUELCH_RAD || m[s] < -SQUELCH_RAD) jumps++;
+      const ratio = jumps / m.length;
       if (!this.squelchOpen && ratio < SQUELCH_OPEN) this.squelchOpen = true;
       else if (this.squelchOpen && ratio > this.squelchClose) this.squelchOpen = false;
     }
 
-    const a = this.dec.processReal(m);
+    const a = this.channelFirst ? this.audioFir.process(m) : this.dec.processReal(m);
 
     let audioSum = 0;
     for (let k = 0; k < a.length; k++) audioSum += a[k] * a[k];
@@ -360,13 +437,19 @@ export class AmDecoder {
     taps = 512,
     outputRate = 48_000,
     agc = true,
+    channelCutoff = 6_000, // IF-selectivity filter width before the envelope detector
   } = {}) {
     if (inRate % audioRate !== 0) throw new Error(`inRate ${inRate} must be a multiple of ${audioRate}`);
     this.inRate = inRate;
     this.audioRate = outputRate || audioRate;
     this.decRate = audioRate;
     this.m = inRate / audioRate;
-    this.dec = new FirDecimator(designLowpass(audioCutoff, inRate, taps), this.m);
+    // The channel filter removes adjacent carriers before the envelope
+    // detector, which would otherwise produce in-band beat audio from any
+    // strong signal within the whole waterfall span.
+    this.ifDec = new FirDecimator(designLowpass(channelCutoff, inRate, taps), this.m);
+    this.audioFir = new FirFilter(designLowpass(audioCutoff, audioRate, taps));
+    this.dec = null;
     this.dc = { R: DC_R, xp: 0, yp: 0 }; // envelope DC blocker (removes carrier)
     this.gain = gain;
     this.agc = agc;
@@ -378,7 +461,8 @@ export class AmDecoder {
   }
 
   reset() {
-    this.dec.reset();
+    this.ifDec.reset();
+    this.audioFir.reset();
     this.dc = { R: DC_R, xp: 0, yp: 0 };
     this.bandRms = 0;
     this.audioRms = 0;
@@ -391,26 +475,36 @@ export class AmDecoder {
   // Returns a fresh Int16Array of audioRate Hz mono PCM.
   process(buf) {
     const n = buf.length >>> 1;
-    const env = new Float64Array(n);
-    const { R } = this.dc;
-    let xp = this.dc.xp;
-    let yp = this.dc.yp;
+    const r = new Float64Array(n);
+    const i = new Float64Array(n);
     let bandSum = 0;
     for (let s = 0; s < n; s++) {
       const xr = (buf[s * 2] - 127.5) / 127.5;
       const xi = (buf[s * 2 + 1] - 127.5) / 127.5;
-      const mag = Math.sqrt(xr * xr + xi * xi);
+      r[s] = xr;
+      i[s] = xi;
       bandSum += xr * xr + xi * xi;
+    }
+    this.bandRms = Math.sqrt(bandSum / (n * 2));
+
+    // Select the tuned channel first so adjacent carriers are removed before
+    // the envelope detector, preventing beat-note bleed from other signals.
+    const c = this.ifDec.process(r, i);
+    const { R } = this.dc;
+    let xp = this.dc.xp;
+    let yp = this.dc.yp;
+    const env = new Float64Array(c.r.length);
+    for (let k = 0; k < c.r.length; k++) {
+      const mag = Math.sqrt(c.r[k] * c.r[k] + c.i[k] * c.i[k]);
       const y = mag - xp + R * yp; // high-pass the envelope to remove the carrier DC
-      env[s] = y;
+      env[k] = y;
       xp = mag;
       yp = y;
     }
     this.dc.xp = xp;
     this.dc.yp = yp;
-    this.bandRms = Math.sqrt(bandSum / (n * 2));
 
-    const a = this.dec.processReal(env);
+    const a = this.audioFir.process(env);
 
     let audioSum = 0;
     for (let k = 0; k < a.length; k++) audioSum += a[k] * a[k];
