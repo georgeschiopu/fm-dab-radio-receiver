@@ -108,13 +108,13 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
+  const persistPresets = (m, list) => {
     try {
-      localStorage.setItem(presetKey(mode), JSON.stringify(presets));
+      localStorage.setItem(presetKey(m), JSON.stringify(list));
     } catch {
       /* ignore */
     }
-  }, [presets, mode]);
+  };
 
   const ensurePlayer = async () => {
     if (!playerRef.current) playerRef.current = new AudioPlayer();
@@ -316,12 +316,16 @@ export default function App() {
     const name = newName.trim();
     const cur = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : freq;
     if (!name || !parseFloat(cur)) return;
-    setPresets((p) => [...p, { name, freq: cur, mode, service: mode === 'dab' ? dabService || undefined : undefined }]);
+    const next = [...presets, { name, freq: cur, mode, service: mode === 'dab' ? dabService || undefined : undefined }];
+    setPresets(next);
+    persistPresets(mode, next);
     setNewName('');
   };
 
   const removePreset = (i) => {
-    setPresets((p) => p.filter((_, idx) => idx !== i));
+    const next = presets.filter((_, idx) => idx !== i);
+    setPresets(next);
+    persistPresets(mode, next);
   };
 
   const selectPreset = (p) => {
