@@ -46,7 +46,7 @@ export default function App() {
   const [gain, setGain] = useState('');
   const [squelch, setSquelch] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [volume, setVolume] = useState(0.8);
+  const [volume, setVolume] = useState(0.5);
   const [status, setStatus] = useState('Idle');
   const [busy, setBusy] = useState(false);
   const [stats, setStats] = useState({ signal: 0, audio: 0 });

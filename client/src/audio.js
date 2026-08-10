@@ -17,7 +17,7 @@ export class AudioPlayer {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     this.ctx = new Ctx({ sampleRate: TARGET_SAMPLE_RATE });
     this.gain = this.ctx.createGain();
-    this.gain.gain.value = 0.8;
+    this.gain.gain.value = 0.5;
     this.gain.connect(this.ctx.destination);
     await this.ctx.resume();
   }
