@@ -8,6 +8,7 @@ import { AudioStreamManager } from './audioStream.js';
 import { SlideWatcher } from './slides.js';
 import { DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
 import { DEFAULT_BINS } from './spectrum.js';
+import { getPresets, setPresets } from './presets.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -121,6 +122,19 @@ app.get('/api/config', (req, res) => {
     amFreq: AM_DEFAULT_FREQ,
     squelch: 0,
   });
+});
+
+app.get('/api/presets', (req, res) => {
+  const mode = req.query.mode || 'fm';
+  res.json({ mode, presets: getPresets(mode) });
+});
+
+app.use(express.json());
+
+app.put('/api/presets', (req, res) => {
+  const body = req.body || {};
+  const mode = req.query.mode || body.mode || 'fm';
+  res.json({ mode, presets: setPresets(mode, body.presets) });
 });
 
 app.use('/logos', express.static(LOGOS_DIR, { maxAge: '1h' }));

@@ -65,14 +65,31 @@ export default function App() {
   const playerRef = useRef(null);
   const spectrumRef = useRef(null);
   const playingRef = useRef(false);
+  const presetsModeRef = useRef(null);
 
   const loadPresets = (m) => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(presetKey(m)) || '[]');
-      if (Array.isArray(saved)) setPresets(saved);
-    } catch {
-      /* ignore */
-    }
+    presetsModeRef.current = m;
+    fetch(`/api/presets?mode=${m}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (presetsModeRef.current !== m) return;
+        const list = Array.isArray(data.presets) ? data.presets : [];
+        setPresets(list);
+        try {
+          localStorage.setItem(presetKey(m), JSON.stringify(list));
+        } catch {
+          /* ignore */
+        }
+      })
+      .catch(() => {
+        if (presetsModeRef.current !== m) return;
+        try {
+          const saved = JSON.parse(localStorage.getItem(presetKey(m)) || '[]');
+          if (Array.isArray(saved)) setPresets(saved);
+        } catch {
+          /* ignore */
+        }
+      });
   };
 
   useEffect(() => {
@@ -114,6 +131,13 @@ export default function App() {
     } catch {
       /* ignore */
     }
+    fetch(`/api/presets?mode=${m}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ presets: list }),
+    }).catch(() => {
+      /* server unreachable: local cache kept as fallback */
+    });
   };
 
   const ensurePlayer = async () => {

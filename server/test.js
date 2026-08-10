@@ -4,6 +4,11 @@ import { RtlTcpClient, CMD, DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
 import { FmDecoder, AmDecoder, LinearResampler } from './dsp.js';
 import { SpectrumAnalyzer, DEFAULT_BINS } from './spectrum.js';
 import { channelBlockForFreq, channelFreqKHz, DabReceiver } from './dab.js';
+import {
+  getPresets,
+  setPresets,
+  setPresetsFileForTests,
+} from './presets.js';
 
 const assert = (cond, msg) => {
   if (!cond) {
@@ -486,6 +491,37 @@ function testDabChannelMap() {
   console.log(`OK: ${cases.length} channel mappings + roundtrip correct`);
 }
 
+function testPresetStore() {
+  console.log('--- preset store test ---');
+  const file = `/tmp/opencode-presets-${process.pid}.json`;
+  setPresetsFileForTests(file);
+  try {
+    assert(Array.isArray(getPresets('fm')) && getPresets('fm').length === 0, 'empty fm presets');
+    const added = setPresets('fm', [
+      { name: 'Radio1', freq: '95.1', service: 'Radio One' },
+      { name: '', freq: '99.9' },
+      null,
+      { name: 'X'.repeat(100), freq: '98.0' },
+    ]);
+    assert(added.length === 2, `junk filtered, got ${added.length}`);
+    assert(added[0].name === 'Radio1' && added[0].service === 'Radio One', 'clean preset kept');
+    assert(added[1].name.length === 80, 'name truncated to 80 chars');
+    assert(getPresets('nfm').length === 0, 'nfm unaffected');
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert(stored.fm.length === 2 && stored.fm[0].name === 'Radio1', 'file persisted on disk');
+    setPresets('am', [{ name: 'AM1', freq: '7.1' }]);
+    const reloaded = getPresets('am');
+    assert(reloaded.length === 1 && reloaded[0].mode === 'am', 'mode forced on entry');
+  } finally {
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      /* ignore */
+    }
+  }
+  console.log('OK: preset store roundtrip + sanitize correct');
+}
+
 testProtocol()
   .then(testDsp)
   .then(testNfmDsp)
@@ -495,6 +531,7 @@ testProtocol()
   .then(testSpectrum)
   .then(testDabPcmConversion)
   .then(testDabChannelMap)
+  .then(testPresetStore)
   .then(() => {
     console.log('\nAll tests passed.');
     process.exitCode = 0;
