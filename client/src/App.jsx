@@ -82,7 +82,7 @@ export default function App() {
   const [authPass, setAuthPass] = useState('');
   const [authError, setAuthError] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
-  const [tuneStep, setTuneStep] = useState(10);
+  const [tuneStep, setTuneStep] = useState(100_000);
   const [knobAngle, setKnobAngle] = useState(0);
 
   const wsRef = useRef(null);
@@ -93,7 +93,7 @@ export default function App() {
   const knobRef = useRef(null);
   const wheelAccRef = useRef(0);
   const tuneFreqRef = useRef(null);
-  const fineRef = useRef({ mode: 'fm', tuneStep: 10, nfmFreq: '145.000', amFreq: '7.100' });
+  const fineRef = useRef({ mode: 'fm', tuneStep: 100_000, nfmFreq: '145.000', amFreq: '7.100' });
   fineRef.current = { mode, tuneStep, nfmFreq, amFreq };
 
   const loadPresets = (m) => {
@@ -591,7 +591,7 @@ export default function App() {
       if (cur === null) return;
       const hz = Math.round(parseFloat(cur) * 1e6);
       const next = Math.max(0, Math.min(1_000_000_000, hz - ticks * step));
-      const s = (next / 1e6).toFixed(6);
+      const s = (next / 1e6).toFixed(3);
       if (m === 'nfm') {
         setNfmFreq(s);
         if (playingRef.current && tuneFreqRef.current) tuneFreqRef.current(s, 'nfm', undefined, { clear: false });
@@ -877,19 +877,19 @@ export default function App() {
 
           {(mode === 'nfm' || mode === 'am') && (
             <div className="tune">
-              <div className="tune-label">Fine tune · {tuneStep} Hz/step</div>
+              <div className="tune-label">Manual tuning · {tuneStep / 1e6} MHz/step</div>
               <div className="tune-row">
                 <div className="tune-knob" ref={knobRef} title="Scroll to tune">
                   <div className="tune-knob-indicator" style={{ transform: `rotate(${knobAngle}deg)` }} />
                 </div>
                 <div className="tune-steps">
-                  {[1, 10, 20, 50].map((s) => (
+                  {[10_000, 50_000, 100_000, 500_000].map((s) => (
                     <button
                       key={s}
                       className={`tune-step${tuneStep === s ? ' active' : ''}`}
                       onClick={() => setTuneStep(s)}
                     >
-                      {s}Hz
+                      {s / 1e6} MHz
                     </button>
                   ))}
                 </div>
