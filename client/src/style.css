@@ -376,13 +376,13 @@ button:disabled {
 
 .tune-knob {
   position: relative;
-  width: 64px;
-  height: 64px;
+  width: 96px;
+  height: 96px;
   flex-shrink: 0;
   border-radius: 50%;
   background: radial-gradient(circle at 35% 30%, #2d333b, #161b22 70%);
   border: 2px solid #30363d;
-  box-shadow: inset 0 -4px 8px rgba(0, 0, 0, 0.5), 0 2px 4px rgba(0, 0, 0, 0.4);
+  box-shadow: inset 0 -6px 12px rgba(0, 0, 0, 0.5), 0 3px 6px rgba(0, 0, 0, 0.4);
   cursor: ns-resize;
   user-select: none;
 }
@@ -390,7 +390,7 @@ button:disabled {
 .tune-knob::after {
   content: '';
   position: absolute;
-  inset: 6px;
+  inset: 9px;
   border-radius: 50%;
   border: 1px solid #30363d;
 }
@@ -399,13 +399,13 @@ button:disabled {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 3px;
-  height: 20px;
-  margin-left: -1.5px;
-  margin-top: -20px;
+  width: 4px;
+  height: 32px;
+  margin-left: -2px;
+  margin-top: -32px;
   background: #58a6ff;
   border-radius: 2px;
-  transform-origin: 50% 20px;
+  transform-origin: 50% 32px;
 }
 
 .tune-steps {
@@ -462,8 +462,24 @@ button:disabled {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   padding: 8px 12px;
   text-align: left;
+}
+
+.station-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.station-logo {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  object-fit: contain;
+  border-radius: 4px;
 }
 
 .station-name {
@@ -551,4 +567,171 @@ button:disabled {
 .topbar-user button {
   padding: 6px 12px;
   font-size: 13px;
+}
+
+/* FM band scanner */
+.scan {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.scan-title {
+  font-size: 13px;
+  color: #8b949e;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.scan-help {
+  font-size: 11px;
+  color: #6e7681;
+}
+
+.scan-start {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scan-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scan-bar {
+  height: 8px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.scan-fill {
+  height: 100%;
+  background: #1f6feb;
+  transition: width 0.2s ease;
+}
+
+.scan-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: #8b949e;
+}
+
+.scan-meta span:last-of-type {
+  flex: 1;
+  text-align: right;
+}
+
+.scan-meta button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.scan-error {
+  font-size: 12px;
+  color: #f85149;
+}
+
+.scan-hits {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid #30363d;
+  padding-top: 8px;
+}
+
+.scan-hits-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: #8b949e;
+}
+
+.scan-done {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.scan-hit {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.scan-hit-tune {
+  flex: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.scan-hit-tune.active {
+  background: #1f6feb;
+  border-color: #388bfd;
+}
+
+.scan-hit-tune.active .station-name {
+  color: #fff;
+}
+
+.scan-hit-tune.active .scan-hit-signal {
+  color: #9ec7f7;
+}
+
+.scan-hit-signal {
+  color: #8b949e;
+  font-size: 12px;
+}
+
+.scan-hit-save {
+  padding: 0 12px;
+  color: #2ea043;
+  font-size: 16px;
+}
+
+.scan-hit-save:hover {
+  background: #2ea04322;
+}
+
+/* Save-station modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(1, 4, 9, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 16px;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }

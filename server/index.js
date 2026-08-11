@@ -9,6 +9,7 @@ import { SlideWatcher } from './slides.js';
 import { DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
 import { DEFAULT_BINS } from './spectrum.js';
 import { getPresets, setPresets } from './presets.js';
+import { presetLogo } from './fmLogos.js';
 import {
   registerUser,
   loginUser,
@@ -72,6 +73,7 @@ function requireAuth(req, res, next) {
 
 const manager = new AudioStreamManager();
 manager.on('status', (s) => broadcast(statusMsg(s)));
+manager.on('scan', (m) => broadcast({ type: 'scan', ...m }));
 manager.on('error', (err) => broadcast({ type: 'error', message: err.message }));
 
 // MOT slideshow covers written by dablin -> broadcast to clients as base64.
@@ -166,9 +168,20 @@ app.get('/api/config', requireAuth, (req, res) => {
   });
 });
 
-app.get('/api/presets', requireAuth, (req, res) => {
+app.get('/api/presets', requireAuth, async (req, res) => {
   const mode = req.query.mode || 'fm';
-  res.json({ mode, presets: getPresets(req.user, mode) });
+  const presets = getPresets(req.user, mode);
+  const withLogos = await Promise.allSettled(
+    presets.map(async (p) => {
+      const curated = logoFor(p.service, p.sid);
+      const logo = curated || (await presetLogo(p));
+      return { ...p, logo };
+    })
+  );
+  res.json({
+    mode,
+    presets: withLogos.map((r) => (r.status === 'fulfilled' ? r.value : r.reason)),
+  });
 });
 
 app.put('/api/presets', requireAuth, (req, res) => {
@@ -240,6 +253,39 @@ wss.on('connection', (ws, req) => {
     } else if (msg.op === 'squelch') {
       const level = msg.level !== undefined ? Number(msg.level) : 0;
       if (Number.isFinite(level)) manager.setSquelch(level);
+    } else if (msg.op === 'scan') {
+      const start = Math.round(Number(msg.start));
+      const stop = Math.round(Number(msg.stop));
+      const host = msg.host || DEFAULT_HOST;
+      const port = Number(msg.port || DEFAULT_PORT);
+      const gain = msg.gain !== undefined && msg.gain !== '' ? Number(msg.gain) : DEFAULT_GAIN;
+      if (!Number.isFinite(start) || !Number.isFinite(stop) || start <= 0 || stop <= start) return;
+      try {
+        if (
+          !manager.running ||
+          manager.host !== host ||
+          manager.port !== port ||
+          manager.mode !== 'fm' ||
+          !manager.connected
+        ) {
+          await manager.start({ mode: 'fm', host, port, freq: start, gain });
+        } else {
+          manager.setGain(gain);
+        }
+        const result = manager.startScan({
+          startFreq: start,
+          stopFreq: stop,
+          stepHz: msg.step,
+          threshold: msg.threshold,
+          dwellMs: msg.dwell,
+        });
+        if (!result) ws.send(JSON.stringify({ type: 'scan', kind: 'error', message: 'Scan requires FM mode and a connected rtl_tcp' }));
+      } catch (err) {
+        ws.send(JSON.stringify({ type: 'scan', kind: 'error', message: `rtl_tcp: ${err.message}` }));
+      }
+    } else if (msg.op === 'scanStop') {
+      const r = manager.stopScan();
+      if (r) ws.send(JSON.stringify({ type: 'scan', kind: 'done', hits: r.hits, total: r.total, aborted: true }));
     } else if (msg.op === 'stop') {
       clearSlides();
       manager.stop();

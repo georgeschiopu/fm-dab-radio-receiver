@@ -56,6 +56,15 @@ export default function App() {
   const [status, setStatus] = useState('Idle');
   const [busy, setBusy] = useState(false);
   const [stats, setStats] = useState({ signal: 0, audio: 0 });
+  const [scanning, setScanning] = useState(false);
+  const [scanTotal, setScanTotal] = useState(0);
+  const [scanDone, setScanDone] = useState(0);
+  const [scanProgress, setScanProgress] = useState('');
+  const [scanSensitivity, setScanSensitivity] = useState('normal');
+  const [scanHits, setScanHits] = useState([]);
+  const [scanError, setScanError] = useState('');
+  const [savePrompt, setSavePrompt] = useState(null);
+  const [saveName, setSaveName] = useState('');
   const [dabInfo, setDabInfo] = useState(null);
   const [dabServices, setDabServices] = useState([]);
   const [dabService, setDabService] = useState('');
@@ -280,6 +289,23 @@ export default function App() {
             setBusy(false);
           } else if (msg.type === 'slide') {
             setDabSlide(msg.data ? `data:${msg.mime};base64,${msg.data}` : null);
+          } else if (msg.type === 'scan') {
+            if (msg.kind === 'started') {
+              setScanTotal(msg.total || 0);
+              setScanDone(0);
+              setScanProgress('');
+            } else if (msg.kind === 'progress') {
+              setScanDone(msg.done || 0);
+              setScanTotal(msg.total || 0);
+              setScanProgress(msg.freq ? `${(msg.freq / 1e6).toFixed(1)} MHz` : '');
+            } else if (msg.kind === 'done') {
+              setScanning(false);
+              setScanDone(msg.total || 0);
+              if (msg.hits) setScanHits(msg.hits);
+            } else if (msg.kind === 'error') {
+              setScanError(msg.message || 'Scan failed');
+              setScanning(false);
+            }
           }
         } else {
           const bytes = new Uint8Array(ev.data);
@@ -301,8 +327,79 @@ export default function App() {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   };
 
+  const SCAN_SENSITIVITY = { high: 0.08, normal: 0.12, low: 0.18 };
+
+  const startScan = async () => {
+    if (mode !== 'fm' || scanning || busy) return;
+    setScanning(true);
+    setScanHits([]);
+    setScanDone(0);
+    setScanTotal(0);
+    setScanProgress('');
+    setScanError('');
+    try {
+      let ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) ws = await openWs();
+      if (playingRef.current && playerRef.current) playerRef.current.stop();
+      playingRef.current = false;
+      setPlaying(false);
+      send({
+        op: 'scan',
+        start: 87_500_000,
+        stop: 108_000_000,
+        step: 100_000,
+        threshold: SCAN_SENSITIVITY[scanSensitivity] || 0.12,
+        dwell: 200,
+        host,
+        port: parseInt(port, 10),
+        gain: gain.trim() === '' ? undefined : Number(gain),
+      });
+    } catch (err) {
+      setScanError(err.message || 'Scan connection failed');
+      setScanning(false);
+    }
+  };
+
+  const stopScan = () => {
+    if (!scanning) return;
+    setScanning(false);
+    send({ op: 'scanStop' });
+  };
+
+  const playHit = (hit) => {
+    play((hit.freq / 1e6).toFixed(1), 'fm');
+  };
+
+  const clearScanHits = () => {
+    setScanHits([]);
+    setScanDone(0);
+    setScanTotal(0);
+    setScanProgress('');
+  };
+
+  const saveHit = (hit) => {
+    setSavePrompt(hit);
+    setSaveName('');
+  };
+
+  const confirmSaveHit = () => {
+    if (!savePrompt) return;
+    const name = saveName.trim() || `FM ${(savePrompt.freq / 1e6).toFixed(1)} MHz`;
+    const next = sortPresets([
+      ...presets,
+      { name, freq: (savePrompt.freq / 1e6).toFixed(1), mode: 'fm' },
+    ]);
+    setPresets(next);
+    persistPresets('fm', next);
+    setSavePrompt(null);
+  };
+
   const play = async (freqOverride, modeOverride, serviceOverride) => {
     if (busy) return;
+    if (scanning) {
+      setScanning(false);
+      send({ op: 'scanStop' });
+    }
     setBusy(true);
     try {
       const m = modeOverride || mode;
@@ -340,6 +437,10 @@ export default function App() {
 
   const stop = async () => {
     playingRef.current = false;
+    if (scanning) {
+      setScanning(false);
+      send({ op: 'scanStop' });
+    }
     send({ op: 'stop' });
     if (playerRef.current) playerRef.current.stop();
     setPlaying(false);
@@ -392,6 +493,10 @@ export default function App() {
 
   const changeMode = (m) => {
     if (mode === m) return;
+    if (scanning) {
+      setScanning(false);
+      send({ op: 'scanStop' });
+    }
     setMode(m);
     loadPresets(m);
     if (playingRef.current) {
@@ -494,7 +599,7 @@ export default function App() {
         setAmFreq(s);
         if (playingRef.current && tuneFreqRef.current) tuneFreqRef.current(s, 'am', undefined, { clear: false });
       }
-      setKnobAngle((a) => (((a + ticks * KNOB_DEG) % 360) + 360) % 360);
+      setKnobAngle((a) => (((a - ticks * KNOB_DEG) % 360) + 360) % 360);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
@@ -709,6 +814,67 @@ export default function App() {
             )}
           </div>
 
+          {mode === 'fm' && (
+            <div className="scan">
+              <div className="scan-title">
+                FM band scan
+                <span className="scan-help">87.5–108 MHz</span>
+              </div>
+              {scanning ? (
+                <div className="scan-progress">
+                  <div className="scan-bar">
+                    <div
+                      className="scan-fill"
+                      style={{ width: `${scanTotal ? (scanDone / scanTotal) * 100 : 0}%` }}
+                    />
+                  </div>
+                  <div className="scan-meta">
+                    <span>{scanDone}/{scanTotal}</span>
+                    <span>{scanProgress}</span>
+                    <button onClick={stopScan} disabled={!scanning}>Stop</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="scan-start">
+                  <select
+                    value={scanSensitivity}
+                    onChange={(e) => setScanSensitivity(e.target.value)}
+                  >
+                    <option value="high">High sensitivity</option>
+                    <option value="normal">Normal</option>
+                    <option value="low">Low sensitivity</option>
+                  </select>
+                  <button className="primary" onClick={startScan} disabled={busy}>
+                    Scan FM band
+                  </button>
+                </div>
+              )}
+              {scanError && <div className="scan-error">{scanError}</div>}
+              {scanHits.length > 0 && (
+                <div className="scan-hits">
+                  <div className="scan-hits-title">
+                    <span>Found {scanHits.length} station{scanHits.length === 1 ? '' : 's'}</span>
+                    <button className="scan-done" onClick={clearScanHits}>Done</button>
+                  </div>
+                  {scanHits.map((h, i) => (
+                    <div className="scan-hit" key={i}>
+                      <button
+                        className={`scan-hit-tune${playing && freqMatch((h.freq / 1e6).toFixed(1), currentFreq) ? ' active' : ''}`}
+                        onClick={() => playHit(h)}
+                      >
+                        <span className="station-name">{(h.freq / 1e6).toFixed(1)} MHz</span>
+                        <span className="scan-hit-signal">{(h.signal * 100).toFixed(0)}%</span>
+                      </button>
+                      <button className="scan-hit-save" onClick={() => saveHit(h)} title="Save to stations">
+                        +
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {(mode === 'nfm' || mode === 'am') && (
             <div className="tune">
               <div className="tune-label">Fine tune · {tuneStep} Hz/step</div>
@@ -751,7 +917,12 @@ export default function App() {
             {presets.map((p, i) => (
               <div className={`station${isPlayingPreset(p) ? ' active' : ''}`} key={i}>
                 <button className="station-tune" onClick={() => selectPreset(p)}>
-                  <span className="station-name">{p.name}</span>
+                  <span className="station-info">
+                    {p.logo && (
+                      <img className="station-logo" src={p.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                    )}
+                    <span className="station-name">{p.name}</span>
+                  </span>
                   <span className="station-freq">
                     {(p.mode === 'dab' && p.service ? `${p.service} · ` : '')}
                     {p.mode === 'dab' ? `${dabChannelForMhz(parseFloat(p.freq) || 216.928)[0]} (${p.freq} MHz)` : `${p.freq} MHz`}
@@ -823,6 +994,30 @@ export default function App() {
       </div>
 
       <div className={`status ${status.startsWith('Error') ? 'error' : ''}`}>{status}</div>
+
+      {savePrompt && (
+        <div className="modal-overlay" onClick={() => setSavePrompt(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title">
+              Save station {(savePrompt.freq / 1e6).toFixed(1)} MHz
+            </div>
+            <label>
+              Name
+              <input
+                value={saveName}
+                onChange={(e) => setSaveName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && confirmSaveHit()}
+                placeholder={`FM ${(savePrompt.freq / 1e6).toFixed(1)}`}
+                autoFocus
+              />
+            </label>
+            <div className="modal-actions">
+              <button className="primary" onClick={confirmSaveHit}>Save</button>
+              <button onClick={() => setSavePrompt(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
