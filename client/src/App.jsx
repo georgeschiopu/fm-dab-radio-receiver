@@ -591,7 +591,7 @@ export default function App() {
       if (cur === null) return;
       const hz = Math.round(parseFloat(cur) * 1e6);
       const next = Math.max(0, Math.min(1_000_000_000, hz - ticks * step));
-      const s = (next / 1e6).toFixed(3);
+      const s = (next / 1e6).toFixed(4);
       if (m === 'nfm') {
         setNfmFreq(s);
         if (playingRef.current && tuneFreqRef.current) tuneFreqRef.current(s, 'nfm', undefined, { clear: false });
@@ -883,7 +883,7 @@ export default function App() {
                   <div className="tune-knob-indicator" style={{ transform: `rotate(${knobAngle}deg)` }} />
                 </div>
                 <div className="tune-steps">
-                  {[10_000, 50_000, 100_000, 500_000].map((s) => (
+                  {[100, 1_000, 10_000, 100_000].map((s) => (
                     <button
                       key={s}
                       className={`tune-step${tuneStep === s ? ' active' : ''}`}
