@@ -75,6 +75,7 @@ export default function App() {
   const [span, setSpan] = useState(288_000);
   const [bins, setBins] = useState(256);
   const [centerHz, setCenterHz] = useState(null);
+  const [tunePct, setTunePct] = useState(50); // tuned channel position in the waterfall
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [authMode, setAuthMode] = useState('login');
@@ -277,7 +278,10 @@ export default function App() {
               setStatus(msg.connected ? `Tuned to ${(msg.freq / 1e6).toFixed(1)} MHz` : 'Idle');
               if (msg.connected) {
                 setStats({ signal: msg.signal || 0, audio: msg.audio || 0 });
-                setCenterHz(msg.freq);
+                const c = msg.center != null ? msg.center : msg.freq;
+                setCenterHz(c);
+                const half = (msg.span || span) / 2;
+                setTunePct(Math.min(100, Math.max(0, 50 + ((msg.freq - c) / half) * 50)));
               }
               if (playerRef.current) playerRef.current.setRate(msg.rate || 48000);
               if (msg.span) setSpan(msg.span);
@@ -955,7 +959,7 @@ export default function App() {
                 ) : (
                   <Waterfall ref={spectrumRef} bins={bins} height={160} />
                 )}
-                {centerHz && <div className="waterfall-marker" />}
+                {centerHz && <div className="waterfall-marker" style={{ left: `${tunePct}%` }} />}
               </div>
               <div className="waterfall-axis">
                 <span>{centerHz ? fmtMHz(centerHz - span / 2) : ''}</span>

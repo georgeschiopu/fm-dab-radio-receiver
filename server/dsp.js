@@ -274,6 +274,9 @@ export class FmDecoder {
     this.bandRms = 0;
     this.audioRms = 0;
     this.outputRms = 0;
+    this.mixOffset = 0;
+    this.mixPhase = 0;
+    this.mixInc = 0;
     this.setSquelch(squelch);
   }
 
@@ -293,6 +296,16 @@ export class FmDecoder {
     }
   }
 
+  // Shift the channel selection digitally within the captured band. A channel
+  // `offsetHz` away from the tuner center is mixed down to baseband so the
+  // existing channel filter + demodulators pick it up, letting the tuner stay
+  // parked while the user rides the knob (glitch-free with no hardware retune).
+  setChannelOffset(offsetHz) {
+    const off = Math.round(Number(offsetHz) || 0);
+    this.mixOffset = off;
+    this.mixInc = off === 0 ? 0 : (2 * Math.PI * off) / this.inRate;
+  }
+
   reset() {
     if (this.dec) this.dec.reset();
     if (this.ifDec) this.ifDec.reset();
@@ -308,6 +321,7 @@ export class FmDecoder {
     this.squelchOpen = false;
     this.gate = this.squelch ? 0 : 1;
     if (this.resampler) this.resampler.reset();
+    this.mixPhase = 0;
   }
 
   // buf: Node Buffer of interleaved unsigned 8-bit I/Q at inRate.
@@ -334,6 +348,21 @@ export class FmDecoder {
     this.dc.xpR = xpR; this.dc.ypR = ypR;
     this.dc.xpI = xpI; this.dc.ypI = ypI;
     this.bandRms = Math.sqrt(bandSum / (n * 2));
+
+    // Digitally shift the tuned channel to baseband when mixing is active.
+    if (this.mixInc !== 0) {
+      let ph = this.mixPhase;
+      for (let s = 0; s < n; s++) {
+        const c = Math.cos(ph);
+        const sn = Math.sin(ph);
+        const xr = r[s];
+        const xi = i[s];
+        r[s] = xr * c + xi * sn;
+        i[s] = xi * c - xr * sn;
+        ph += this.mixInc;
+      }
+      this.mixPhase = ph;
+    }
 
     // Discriminate only the wanted channel. When channelFirst is set the full
     // band is channel-filtered + decimated first, so an adjacent FM carrier's
@@ -458,6 +487,9 @@ export class AmDecoder {
     this.bandRms = 0;
     this.audioRms = 0;
     this.outputRms = 0;
+    this.mixOffset = 0;
+    this.mixPhase = 0;
+    this.mixInc = 0;
   }
 
   reset() {
@@ -469,6 +501,14 @@ export class AmDecoder {
     this.outputRms = 0;
     this.agcGain = this.agc ? 1 : this.gain;
     if (this.resampler) this.resampler.reset();
+    this.mixPhase = 0;
+  }
+
+  // Digital channel selection within the captured band (see FmDecoder).
+  setChannelOffset(offsetHz) {
+    const off = Math.round(Number(offsetHz) || 0);
+    this.mixOffset = off;
+    this.mixInc = off === 0 ? 0 : (2 * Math.PI * off) / this.inRate;
   }
 
   // buf: Node Buffer of interleaved unsigned 8-bit I/Q at inRate.
@@ -486,6 +526,21 @@ export class AmDecoder {
       bandSum += xr * xr + xi * xi;
     }
     this.bandRms = Math.sqrt(bandSum / (n * 2));
+
+    // Digitally shift the tuned channel to baseband when mixing is active.
+    if (this.mixInc !== 0) {
+      let ph = this.mixPhase;
+      for (let s = 0; s < n; s++) {
+        const c = Math.cos(ph);
+        const sn = Math.sin(ph);
+        const xr = r[s];
+        const xi = i[s];
+        r[s] = xr * c + xi * sn;
+        i[s] = xi * c - xr * sn;
+        ph += this.mixInc;
+      }
+      this.mixPhase = ph;
+    }
 
     // Select the tuned channel first so adjacent carriers are removed before
     // the envelope detector, preventing beat-note bleed from other signals.

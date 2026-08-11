@@ -384,6 +384,50 @@ function testNfmAdjacentRejection() {
   console.log('OK: strong +100 kHz adjacent station is rejected');
 }
 
+// A wanted NFM carrier sitting 30 kHz off the tuner center (i.e. inside the
+// captured 1 MHz window but not at baseband). setChannelOffset() mixes it back
+// to baseband so the demodulator hears the 1 kHz tone without retuning hardware.
+function testNfmDigitalOffset() {
+  console.log('--- nfm digital-offset test ---');
+  const samples = 2_000_000; // 2 s at 1 Msps
+  const iq = synthFmOffsetIq(samples, { fs: 1_000_000, modFreq: 1000, dev: 2500, offset: 30_000 });
+  const dec = new FmDecoder({ inRate: 1_000_000, audioRate: 50_000, audioCutoff: 4_000, deemphasis: 0, gain: 1, taps: 512, outputRate: 48_000, agc: true, channelFirst: true, channelCutoff: 6_000 });
+  dec.setChannelOffset(30_000);
+
+  const chunks = [];
+  const CH = 60000;
+  for (let i = 0; i < iq.length; i += CH * 2) {
+    chunks.push(dec.process(iq.subarray(i, Math.min(i + CH * 2, iq.length))));
+  }
+  const total = chunks.reduce((a, c) => a + c.length, 0);
+  const pcm = new Int16Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    pcm.set(c, off);
+    off += c.length;
+  }
+  const N = pcm.length;
+  const totalPow = (() => {
+    let s = 0;
+    for (let i = 0; i < N; i++) s += (pcm[i] / 32768) ** 2;
+    return s / N;
+  })();
+  const toneAt = (freq) => {
+    let tc = 0;
+    let ts = 0;
+    for (let i = 0; i < N; i++) {
+      const w = (2 * Math.PI * freq * i) / 48000;
+      tc += (pcm[i] / 32768) * Math.cos(w);
+      ts += (pcm[i] / 32768) * Math.sin(w);
+    }
+    return ((tc * tc + ts * ts) / N) / N / totalPow;
+  };
+  const ratio = toneAt(1000);
+  console.log(`  output samples: ${N}, 1kHz tone ratio: ${ratio.toFixed(3)} (offset carrier mixed to baseband)`);
+  assert(ratio > 0.4, `off-center NFM carrier not demodulated (ratio=${ratio.toFixed(3)})`);
+  console.log('OK: setChannelOffset() mixes a 30 kHz-offset carrier cleanly to baseband');
+}
+
 // AM: carrier at +cOff kHz (0 = centered on the tuned channel), amplitude-
 // modulated by a 1 kHz tone at 50%.
 function synthAmIq(samples, { fs = 1_000_000, cOff = 0, modFreq = 1000, depth = 0.5 } = {}) {
@@ -679,6 +723,7 @@ testProtocol()
   .then(testNfmDsp)
   .then(testNfmAgcSquelch)
   .then(testNfmAdjacentRejection)
+  .then(testNfmDigitalOffset)
   .then(testAmDsp)
   .then(testChannelPowerMeter)
   .then(testResampler)

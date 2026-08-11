@@ -39,6 +39,7 @@ export class AudioStreamManager extends EventEmitter {
     this.host = null;
     this.port = null;
     this.freq = null;
+    this.captureCenter = null; // hardware tuner freq; digital tuning shifts this.freq away from it
     this.gain = null;
     this.squelch = 0; // NFM squelch level, 0 = off
     this.stats = { signal: 0, audio: 0 };
@@ -137,6 +138,8 @@ export class AudioStreamManager extends EventEmitter {
       throw err;
     }
     this.connected = true;
+    this.captureCenter = freq;
+    if (this.decoder && this.decoder.setChannelOffset) this.decoder.setChannelOffset(0);
     this.emit('status', this.status());
   }
 
@@ -286,14 +289,27 @@ export class AudioStreamManager extends EventEmitter {
       this.emit('scan', { kind: 'done', hits: [], total: 0, aborted: true });
     }
     this.freq = freq;
-    this.stats = { signal: 0, audio: 0 };
     if (this.mode === 'dab') {
+      this.stats = { signal: 0, audio: 0 };
       if (this.dab.running) {
         this.dab.start({ host: this.host, port: this.port, freqHz: freq, gain: this.gain ?? 40, service });
         this.connected = this.dab.running;
       }
     } else if (this.rtl && this.connected) {
-      this.rtl.tune(freq);
+      const rate = this.decoder ? this.decoder.inRate : DEFAULT_SAMPLE_RATE;
+      const maxOff = Math.floor(rate / 2 * 0.8);
+      const off = this.captureCenter != null ? freq - this.captureCenter : 0;
+      if (this.decoder && this.decoder.setChannelOffset && Math.abs(off) <= maxOff) {
+        // Digital tune: shift the channel inside the already-captured band. No
+        // hardware retune, so the stream never drops and audio stays clean
+        // while riding the knob. Only recenter the hardware at band edges.
+        this.decoder.setChannelOffset(off);
+      } else {
+        this.captureCenter = freq;
+        this.stats = { signal: 0, audio: 0 };
+        if (this.decoder && this.decoder.setChannelOffset) this.decoder.setChannelOffset(0);
+        this.rtl.tune(freq);
+      }
     }
     this.emit('status', this.status());
   }
@@ -329,6 +345,7 @@ export class AudioStreamManager extends EventEmitter {
       services: this.mode === 'dab' ? this.dab.services : [],
       rate: this.mode === 'dab' ? this.dab.rate : this.decoder ? this.decoder.audioRate : null,
       span: this.mode === 'dab' ? null : this.spec ? this.spec.sampleRate : null,
+      center: this.mode === 'dab' ? null : this.captureCenter,
       squelch: this.mode === 'nfm' ? this.squelch : 0,
       scanning: this.scanning,
       signal: this.stats.signal,
