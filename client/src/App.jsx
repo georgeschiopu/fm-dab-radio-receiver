@@ -6,6 +6,12 @@ import Waterfall from './Waterfall.jsx';
 // Presets are stored per mode and per user so FM / NFM station lists stay separate.
 const presetKey = (user, m) => `sdr-${user}-${m}-stations`;
 
+// Stations are always shown sorted alphabetically by name (case-insensitive).
+const sortPresets = (list) =>
+  [...list].sort((a, b) =>
+    String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' })
+  );
+
 const fmtMHz = (hz) => `${(hz / 1e6).toFixed(2)} MHz`;
 
 // ETSI EN 300 401 Band III block centres (MHz).
@@ -90,7 +96,7 @@ export default function App() {
       })
       .then((data) => {
         if (presetsModeRef.current !== m) return;
-        const list = Array.isArray(data.presets) ? data.presets : [];
+        const list = sortPresets(Array.isArray(data.presets) ? data.presets : []);
         setPresets(list);
         try {
           localStorage.setItem(presetKey(user, m), JSON.stringify(list));
@@ -102,7 +108,7 @@ export default function App() {
         if (presetsModeRef.current !== m) return;
         try {
           const saved = JSON.parse(localStorage.getItem(presetKey(user, m)) || '[]');
-          if (Array.isArray(saved)) setPresets(saved);
+          if (Array.isArray(saved)) setPresets(sortPresets(saved));
         } catch {
           /* ignore */
         }
@@ -424,7 +430,10 @@ export default function App() {
     const name = newName.trim();
     const cur = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : freq;
     if (!name || !parseFloat(cur)) return;
-    const next = [...presets, { name, freq: cur, mode, service: mode === 'dab' ? dabService || undefined : undefined }];
+    const next = sortPresets([
+      ...presets,
+      { name, freq: cur, mode, service: mode === 'dab' ? dabService || undefined : undefined },
+    ]);
     setPresets(next);
     persistPresets(mode, next);
     setNewName('');
