@@ -1,7 +1,7 @@
 import net from 'node:net';
 import fs from 'node:fs';
 import { RtlTcpClient, CMD, DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
-import { FmDecoder, AmDecoder, LinearResampler } from './dsp.js';
+import { FmDecoder, AmDecoder, LinearResampler, ChannelPowerMeter } from './dsp.js';
 import { SpectrumAnalyzer, DEFAULT_BINS } from './spectrum.js';
 import { channelBlockForFreq, channelFreqKHz, DabReceiver } from './dab.js';
 import {
@@ -33,6 +33,22 @@ function synthFmIq(samples, { fs = 288_000, modFreq = 1000, dev = 40000 } = {}) 
     phase %= 2 * Math.PI;
     buf[s * 2] = 128 + Math.round(Math.cos(phase) * 110);
     buf[s * 2 + 1] = 128 + Math.round(Math.sin(phase) * 110);
+  }
+  return buf;
+}
+
+// FM carrier with a fixed residual frequency offset (and configurable amplitude).
+function synthFmOffsetIq(samples, { fs = 288_000, modFreq = 1000, dev = 40000, offset = 1200, amp = 110 } = {}) {
+  const buf = Buffer.alloc(samples * 2);
+  let phase = 0;
+  let offsetPhase = 0;
+  for (let s = 0; s < samples; s++) {
+    const audio = Math.sin((2 * Math.PI * modFreq * s) / fs);
+    phase += (2 * Math.PI * dev * audio) / fs;
+    offsetPhase += (2 * Math.PI * offset) / fs;
+    const total = phase + offsetPhase;
+    buf[s * 2] = 128 + Math.round(Math.cos(total) * amp);
+    buf[s * 2 + 1] = 128 + Math.round(Math.sin(total) * amp);
   }
   return buf;
 }
@@ -435,6 +451,31 @@ function testAmDsp() {
   console.log('OK: AM demodulated output is a clean 1kHz tone');
 }
 
+function testChannelPowerMeter() {
+  console.log('--- channel power meter test ---');
+  const fs = 288_000;
+  const meter = new ChannelPowerMeter({ inRate: fs });
+
+  // Strong on-channel FM carrier offset a little from DC (as in real life).
+  const strong = synthFmOffsetIq(576_000, { fs, offset: 1200 });
+  const onCh = meter.process(strong);
+  assert(onCh > 0.3, `on-channel power too low: ${onCh.toFixed(4)}`);
+
+  // Quiet band (noise floor): near-zero in-channel power.
+  const quiet = synthFmOffsetIq(576_000, { fs, offset: 1200, amp: 0 });
+  const floor = meter.process(quiet);
+  assert(floor < 0.05, `noise floor too high: ${floor.toFixed(4)}`);
+
+  // Strong FM signal 100 kHz off-frequency: must be rejected by the channel filter.
+  const adjacent = synthFmOffsetIq(576_000, { fs, offset: 1200 + 100_000 });
+  const adj = meter.process(adjacent);
+  assert(adj < 0.1, `adjacent-channel leakage too high: ${adj.toFixed(4)}`);
+  assert(onCh > adj * 3, `on-channel (${onCh.toFixed(4)}) not well above adjacent (${adj.toFixed(4)})`);
+
+  console.log(`  on-channel=${onCh.toFixed(4)}  adjacent(+100kHz)=${adj.toFixed(4)}  noise-floor=${floor.toFixed(4)}`);
+  console.log('OK: in-channel RF energy separates real stations from adjacent channels and noise');
+}
+
 function testResampler() {
   console.log('--- resampler test ---');
   const n = 100_000; // 2 s at 50 kHz
@@ -639,6 +680,7 @@ testProtocol()
   .then(testNfmAgcSquelch)
   .then(testNfmAdjacentRejection)
   .then(testAmDsp)
+  .then(testChannelPowerMeter)
   .then(testResampler)
   .then(testSpectrum)
   .then(testDabPcmConversion)

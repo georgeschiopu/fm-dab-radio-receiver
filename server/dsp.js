@@ -538,3 +538,49 @@ export class AmDecoder {
     return scaled;
   }
 }
+
+// RF energy confined to a narrow band around the tuned center frequency. Used
+// by the FM scanner: an on-frequency FM carrier (constant envelope) reads high,
+// while an adjacent station 100 kHz away falls outside the passband and reads
+// near the in-band noise floor. A full-band RMS could not tell those apart at
+// 288 ksps because the whole +/-144 kHz span is always visible.
+export class ChannelPowerMeter {
+  constructor({ rfBandwidth = 80_000, inRate = 288_000, taps = 512, dec = 4 } = {}) {
+    // Per-chunk DC removal (mean subtract) drops the ADC offset and carriers
+    // sitting exactly at baseband DC; real on-air carriers sit at the residual
+    // frequency error (hundreds of Hz) and pass through fine.
+    this.dec = new FirDecimator(designLowpass(rfBandwidth / 2, inRate, taps), dec);
+  }
+
+  reset() {
+    this.dec.reset();
+  }
+
+  // buf: Node Buffer of interleaved unsigned 8-bit I/Q at inRate.
+  // Returns the RMS of the decimated, channel-filtered complex signal (0..1).
+  process(buf) {
+    const n = buf.length >>> 1;
+    const r = new Float64Array(n);
+    const i = new Float64Array(n);
+    let mr = 0;
+    let mi = 0;
+    for (let s = 0; s < n; s++) {
+      const xr = (buf[s * 2] - 127.5) / 127.5;
+      const xi = (buf[s * 2 + 1] - 127.5) / 127.5;
+      r[s] = xr;
+      i[s] = xi;
+      mr += xr;
+      mi += xi;
+    }
+    mr /= n;
+    mi /= n;
+    for (let s = 0; s < n; s++) {
+      r[s] -= mr;
+      i[s] -= mi;
+    }
+    const c = this.dec.process(r, i);
+    let sum = 0;
+    for (let k = 0; k < c.r.length; k++) sum += c.r[k] * c.r[k] + c.i[k] * c.i[k];
+    return Math.sqrt(sum / c.r.length);
+  }
+}
