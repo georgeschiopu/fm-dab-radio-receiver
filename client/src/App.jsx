@@ -75,6 +75,7 @@ export default function App() {
   const [span, setSpan] = useState(288_000);
   const [bins, setBins] = useState(256);
   const [centerHz, setCenterHz] = useState(null);
+  const [tunePct, setTunePct] = useState(50); // tuned channel position in the waterfall
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [authMode, setAuthMode] = useState('login');
@@ -82,7 +83,7 @@ export default function App() {
   const [authPass, setAuthPass] = useState('');
   const [authError, setAuthError] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
-  const [tuneStep, setTuneStep] = useState(10);
+  const [tuneStep, setTuneStep] = useState(100_000);
   const [knobAngle, setKnobAngle] = useState(0);
 
   const wsRef = useRef(null);
@@ -93,7 +94,7 @@ export default function App() {
   const knobRef = useRef(null);
   const wheelAccRef = useRef(0);
   const tuneFreqRef = useRef(null);
-  const fineRef = useRef({ mode: 'fm', tuneStep: 10, nfmFreq: '145.000', amFreq: '7.100' });
+  const fineRef = useRef({ mode: 'fm', tuneStep: 100_000, nfmFreq: '145.000', amFreq: '7.100' });
   fineRef.current = { mode, tuneStep, nfmFreq, amFreq };
 
   const loadPresets = (m) => {
@@ -277,7 +278,10 @@ export default function App() {
               setStatus(msg.connected ? `Tuned to ${(msg.freq / 1e6).toFixed(1)} MHz` : 'Idle');
               if (msg.connected) {
                 setStats({ signal: msg.signal || 0, audio: msg.audio || 0 });
-                setCenterHz(msg.freq);
+                const c = msg.center != null ? msg.center : msg.freq;
+                setCenterHz(c);
+                const half = (msg.span || span) / 2;
+                setTunePct(Math.min(100, Math.max(0, 50 + ((msg.freq - c) / half) * 50)));
               }
               if (playerRef.current) playerRef.current.setRate(msg.rate || 48000);
               if (msg.span) setSpan(msg.span);
@@ -591,7 +595,7 @@ export default function App() {
       if (cur === null) return;
       const hz = Math.round(parseFloat(cur) * 1e6);
       const next = Math.max(0, Math.min(1_000_000_000, hz - ticks * step));
-      const s = (next / 1e6).toFixed(6);
+      const s = (next / 1e6).toFixed(4);
       if (m === 'nfm') {
         setNfmFreq(s);
         if (playingRef.current && tuneFreqRef.current) tuneFreqRef.current(s, 'nfm', undefined, { clear: false });
@@ -877,19 +881,19 @@ export default function App() {
 
           {(mode === 'nfm' || mode === 'am') && (
             <div className="tune">
-              <div className="tune-label">Fine tune · {tuneStep} Hz/step</div>
+              <div className="tune-label">Manual tuning · {tuneStep / 1e6} MHz/step</div>
               <div className="tune-row">
                 <div className="tune-knob" ref={knobRef} title="Scroll to tune">
                   <div className="tune-knob-indicator" style={{ transform: `rotate(${knobAngle}deg)` }} />
                 </div>
                 <div className="tune-steps">
-                  {[1, 10, 20, 50].map((s) => (
+                  {[100, 1_000, 10_000, 100_000].map((s) => (
                     <button
                       key={s}
                       className={`tune-step${tuneStep === s ? ' active' : ''}`}
                       onClick={() => setTuneStep(s)}
                     >
-                      {s}Hz
+                      {s / 1e6} MHz
                     </button>
                   ))}
                 </div>
@@ -955,7 +959,7 @@ export default function App() {
                 ) : (
                   <Waterfall ref={spectrumRef} bins={bins} height={160} />
                 )}
-                {centerHz && <div className="waterfall-marker" />}
+                {centerHz && <div className="waterfall-marker" style={{ left: `${tunePct}%` }} />}
               </div>
               <div className="waterfall-axis">
                 <span>{centerHz ? fmtMHz(centerHz - span / 2) : ''}</span>
