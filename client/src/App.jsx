@@ -371,7 +371,9 @@ export default function App() {
   };
 
   const playHit = (hit) => {
-    play((hit.freq / 1e6).toFixed(1), 'fm');
+    const f = (hit.freq / 1e6).toFixed(1);
+    setFreq(f);
+    play(f, 'fm');
   };
 
   const clearScanHits = () => {
