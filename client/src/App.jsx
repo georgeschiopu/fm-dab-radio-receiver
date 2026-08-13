@@ -915,39 +915,6 @@ export default function App() {
         </div>
 
         <div className="col col-right">
-          <div className="stations">
-            <div className="stations-title">Stations</div>
-            {presets.length === 0 && <div className="stations-empty">No saved stations yet.</div>}
-            {presets.map((p, i) => (
-              <div className={`station${isPlayingPreset(p) ? ' active' : ''}`} key={i}>
-                <button className="station-tune" onClick={() => selectPreset(p)}>
-                  <span className="station-info">
-                    {p.logo && (
-                      <img className="station-logo" src={p.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
-                    )}
-                    <span className="station-name">{p.name}</span>
-                  </span>
-                  <span className="station-freq">
-                    {(p.mode === 'dab' && p.service ? `${p.service} · ` : '')}
-                    {p.mode === 'dab' ? `${dabChannelForMhz(parseFloat(p.freq) || 216.928)[0]} (${p.freq} MHz)` : `${p.freq} MHz`}
-                  </span>
-                </button>
-                <button className="station-del" onClick={() => removePreset(i)} title="Delete">
-                  ✕
-                </button>
-              </div>
-            ))}
-            <div className="row">
-              <input
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && addPreset()}
-                placeholder="Station name"
-              />
-              <button onClick={addPreset}>Save current</button>
-            </div>
-          </div>
-
           {mode === 'fm' || mode === 'nfm' || mode === 'am' ? (
             <div className="waterfall-wrap">
               <div className="waterfall-title">
@@ -993,6 +960,39 @@ export default function App() {
           <div className="meters">
             <Meter label="Signal" value={stats.signal} />
             <Meter label="Audio" value={stats.audio} />
+          </div>
+
+          <div className="stations">
+            <div className="stations-title">Stations</div>
+            {presets.length === 0 && <div className="stations-empty">No saved stations yet.</div>}
+            {presets.map((p, i) => (
+              <div className={`station${isPlayingPreset(p) ? ' active' : ''}`} key={i}>
+                <button className="station-tune" onClick={() => selectPreset(p)}>
+                  <span className="station-info">
+                    {p.logo && (
+                      <img className="station-logo" src={p.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                    )}
+                    <span className="station-name">{p.name}</span>
+                  </span>
+                  <span className="station-freq">
+                    {(p.mode === 'dab' && p.service ? `${p.service} · ` : '')}
+                    {p.mode === 'dab' ? `${dabChannelForMhz(parseFloat(p.freq) || 216.928)[0]} (${p.freq} MHz)` : `${p.freq} MHz`}
+                  </span>
+                </button>
+                <button className="station-del" onClick={() => removePreset(i)} title="Delete">
+                  ✕
+                </button>
+              </div>
+            ))}
+            <div className="row">
+              <input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && addPreset()}
+                placeholder="Station name"
+              />
+              <button onClick={addPreset}>Save current</button>
+            </div>
           </div>
         </div>
       </div>
