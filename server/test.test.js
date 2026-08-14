@@ -5,6 +5,7 @@ import { RtlTcpClient, CMD, DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
 import { FmDecoder, AmDecoder, LinearResampler, ChannelPowerMeter } from './dsp.js';
 import { SpectrumAnalyzer, DEFAULT_BINS } from './spectrum.js';
 import { channelBlockForFreq, channelFreqKHz, DabReceiver } from './dab.js';
+import { imageSizeOfFile } from './fmLogos.js';
 import {
   getPresets,
   setPresets,
@@ -695,6 +696,54 @@ describe('Auth', () => {
     } finally {
       try {
         fs.unlinkSync(file);
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+});
+
+describe('Logo image dimensions', () => {
+  it('reads width/height from PNG and JPEG headers', () => {
+    const dir = `/tmp/opencode-logos-${process.pid}`;
+    fs.mkdirSync(dir, { recursive: true });
+    try {
+      const png = Buffer.from(
+        '89504e470d0a1a0a0000000d49484452000000c0000000c0' +
+          '0806000000000000000000000000000000',
+        'hex'
+      );
+      const pngFile = `${dir}/logo.png`;
+      fs.writeFileSync(pngFile, png);
+      expect(imageSizeOfFile(pngFile)).toEqual({ width: 192, height: 192 });
+
+      const jpeg = Buffer.from(
+        'ffd8ffc0000b0800400080010100ffd9',
+        'hex'
+      );
+      const jpegFile = `${dir}/logo.jpg`;
+      fs.writeFileSync(jpegFile, jpeg);
+      expect(imageSizeOfFile(jpegFile)).toEqual({ width: 128, height: 64 });
+    } finally {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  it('returns null for unknown formats and unreadable files', () => {
+    const dir = `/tmp/opencode-logos-${process.pid}`;
+    fs.mkdirSync(dir, { recursive: true });
+    try {
+      const svgFile = `${dir}/logo.svg`;
+      fs.writeFileSync(svgFile, '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+      expect(imageSizeOfFile(svgFile)).toBe(null);
+      expect(imageSizeOfFile(`${dir}/missing.png`)).toBe(null);
+    } finally {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
       } catch {
         /* ignore */
       }

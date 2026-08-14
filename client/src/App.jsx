@@ -624,6 +624,13 @@ export default function App() {
     return true;
   };
 
+  // Show the playing DAB station's logo (from the saved stations list, falling
+  // back to the server-provided one) next to the station info.
+  const activeLogo =
+    mode === 'dab' && !dabSlide
+      ? presets.find((p) => p.mode === 'dab' && p.logo && isPlayingPreset(p))?.logo || (dabLogo || null)
+      : null;
+
   if (!authChecked) {
     return (
       <div className="card auth-card">
@@ -939,21 +946,26 @@ export default function App() {
           ) : (
             <div className="dab-panel">
               <div
-                className={`dab-info${dabSlide ? ' has-slide' : ''}${dabLogo ? ' has-logo' : ''}`}
+                className={`dab-info${dabSlide ? ' has-slide' : ''}`}
                 style={dabSlide ? { backgroundImage: `url(${dabSlide})` } : null}
               >
-                {dabLogo && !dabSlide && (
-                  <img className="dab-logo" src={dabLogo} alt={dabInfo?.service || ''} />
-                )}
-                {dabInfo && dabInfo.ensemble ? (
-                  <div className="dab-ensemble">{dabInfo.ensemble}</div>
-                ) : (
-                  <div className="dab-ensemble dim">Waiting for ensemble…</div>
-                )}
-                <div className="dab-service">{dabInfo?.service || '—'}</div>
-                <div className="dab-meta">
-                  {dabInfo?.channel ? `Channel ${dabInfo.channel}` : ''}
-                  {dabInfo?.snr != null ? ` · SNR ${dabInfo.snr} dB` : ''}
+                {!dabSlide &&
+                  (activeLogo ? (
+                    <img className="dab-logo-img" src={activeLogo} alt={dabInfo?.service || ''} />
+                  ) : (
+                    <div className="dab-logo-placeholder">No logo</div>
+                  ))}
+                <div className="dab-info-text">
+                  {dabInfo && dabInfo.ensemble ? (
+                    <div className="dab-ensemble">{dabInfo.ensemble}</div>
+                  ) : (
+                    <div className="dab-ensemble dim">Waiting for ensemble…</div>
+                  )}
+                  <div className="dab-service">{dabInfo?.service || '—'}</div>
+                  <div className="dab-meta">
+                    {dabInfo?.channel ? `Channel ${dabInfo.channel}` : ''}
+                    {dabInfo?.snr != null ? ` · SNR ${dabInfo.snr} dB` : ''}
+                  </div>
                 </div>
               </div>
             </div>
