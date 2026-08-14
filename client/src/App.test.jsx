@@ -77,7 +77,7 @@ describe('App', () => {
     expect(screen.getByText('No saved stations yet.')).toBeInTheDocument();
   });
 
-  it('updates the Frequency input when an FM scan hit is clicked', async () => {
+  it('tunes to a found FM signal and resumes scanning from the modal', async () => {
     const user = userEvent.setup();
     vi.stubGlobal('fetch', authenticatedFetch());
     render(<App />);
@@ -90,20 +90,43 @@ describe('App', () => {
     const ws = MockWebSocket.instances[0];
     await waitFor(() => expect(ws.readyState).toBe(MockWebSocket.OPEN));
 
-    ws.emit({
-      type: 'scan',
-      kind: 'done',
-      total: 2,
-      hits: [
-        { freq: 95100000, signal: 0.5 },
-        { freq: 98500000, signal: 0.3 },
-      ],
-    });
+    ws.emit({ type: 'scan', kind: 'hit', freq: 95100000, signal: 0.5, noiseFloor: 0.05 });
 
-    await screen.findByText('Found 2 stations');
-    await user.click(screen.getByText('98.5 MHz'));
+    await screen.findByText('Signal found');
+    await screen.findByText('95.1 MHz');
+    await waitFor(() => expect(freqInput.value).toBe('95.1'));
+    expect(ws.sent.some((m) => m.op === 'tune' && m.freq === 95100000)).toBe(true);
 
-    await waitFor(() => expect(freqInput.value).toBe('98.5'));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(ws.sent.some((m) => m.op === 'scanContinue')).toBe(true));
+    expect(screen.queryByText('Signal found')).not.toBeInTheDocument();
+  });
+
+  it('saves a found 2m signal to stations from the scan modal', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', authenticatedFetch());
+    render(<App />);
+    await screen.findByText('Stations');
+
+    await user.click(screen.getByRole('button', { name: 'NFM' }));
+    await screen.findByText('NFM band scan');
+
+    await user.click(screen.getByRole('button', { name: 'Scan NFM band' }));
+
+    const ws = MockWebSocket.instances[0];
+    await waitFor(() => expect(ws.readyState).toBe(MockWebSocket.OPEN));
+
+    ws.emit({ type: 'scan', kind: 'hit', freq: 145025000, signal: 0.6, noiseFloor: 0.04 });
+
+    await screen.findByText('145.025 MHz');
+    expect(ws.sent.some((m) => m.op === 'tune' && m.freq === 145025000)).toBe(true);
+
+    await user.type(screen.getByPlaceholderText('NFM 145.025 MHz'), 'Repeater');
+    await user.click(screen.getByRole('button', { name: 'Save & Continue' }));
+
+    await waitFor(() => expect(ws.sent.some((m) => m.op === 'scanContinue')).toBe(true));
+    await screen.findByText('Repeater');
+    expect(screen.queryByText('Signal found')).not.toBeInTheDocument();
   });
 
   it('updates the Frequency input when tuning while playing', async () => {
