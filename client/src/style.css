@@ -9,16 +9,14 @@
 body {
   margin: 0;
   min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   background: #101418;
   color: #e6edf3;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
 .card {
-  width: min(960px, 96vw);
+  width: min(1200px, 96vw);
+  margin: 24px auto;
   background: #161b22;
   border: 1px solid #30363d;
   border-radius: 12px;
@@ -26,8 +24,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-height: 92vh;
-  overflow-y: auto;
 }
 
 .columns {
@@ -47,16 +43,22 @@ body {
   flex: 0 0 320px;
 }
 
-.col-right {
+.col-center {
   flex: 1;
+  min-width: 0;
 }
 
-@media (max-width: 760px) {
+.col-right {
+  flex: 0 0 280px;
+}
+
+@media (max-width: 900px) {
   .columns {
     flex-direction: column;
   }
 
   .col-left,
+  .col-center,
   .col-right {
     flex: 1;
     width: 100%;
@@ -465,6 +467,17 @@ button:disabled {
   gap: 8px;
   padding: 8px 12px;
   text-align: left;
+}
+
+.station-tune.dab {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.station-service {
+  font-size: 12px;
+  color: #8b949e;
 }
 
 .station-info {

@@ -67,15 +67,13 @@ describe('App', () => {
     expect(screen.getByRole('heading', { name: 'SDR Receiver' })).toBeInTheDocument();
   });
 
-  it('renders the main UI with the stations list below the meters', async () => {
+  it('renders the main UI with stations in their own right column', async () => {
     vi.stubGlobal('fetch', authenticatedFetch());
     const { container } = render(<App />);
     await screen.findByText('Stations');
 
-    const els = container.querySelectorAll('.meters, .stations');
-    expect(els.length).toBe(2);
-    expect(els[0].className).toBe('meters');
-    expect(els[1].className).toBe('stations');
+    expect(container.querySelector('.col-center .meters')).toBeTruthy();
+    expect(container.querySelector('.col-right .stations')).toBeTruthy();
     expect(screen.getByText('No saved stations yet.')).toBeInTheDocument();
   });
 
