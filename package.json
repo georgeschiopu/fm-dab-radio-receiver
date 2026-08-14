@@ -13,17 +13,22 @@
     "dev:client": "vite --config client/vite.config.js",
     "build": "vite build --config client/vite.config.js",
     "start": "node server/index.js",
-    "test": "node server/test.js"
+    "test": "vitest run"
   },
   "dependencies": {
     "express": "^4.21.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.2",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.0",
+    "jsdom": "^25.0.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "vite": "^6.0.7"
+    "vite": "^6.0.7",
+    "vitest": "^3.0.5"
   }
 }
