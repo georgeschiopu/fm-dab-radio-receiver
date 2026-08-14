@@ -108,41 +108,71 @@ select {
   border: 1px solid #30363d;
   border-radius: 6px;
   padding: 14px;
-  min-height: 160px;
+  min-height: 320px;
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 8px;
+  flex-direction: row;
+  align-items: center;
+  gap: 16px;
   background: #0d1117;
   background-size: cover;
   background-position: center;
   position: relative;
   overflow: hidden;
+  text-align: left;
+}
+
+/* Slideshows keep the full-bleed centered overlay behaviour. */
+.dab-info.has-slide {
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
   text-align: center;
 }
 
-.dab-info.has-slide::before,
-.dab-info.has-logo::before {
+.dab-info.has-slide::before {
   content: "";
   position: absolute;
   inset: 0;
   background: rgba(13, 17, 23, 0.55);
 }
 
-.dab-info.has-slide > *,
-.dab-info.has-logo > * {
+.dab-info.has-slide > * {
   position: relative;
   z-index: 1;
 }
 
-.dab-logo {
-  width: 120px;
-  height: 120px;
+.dab-logo-img {
+  width: 192px;
+  height: 192px;
+  flex: 0 0 192px;
   object-fit: contain;
-  margin: 0 auto;
   background: rgba(13, 17, 23, 0.7);
   border-radius: 6px;
   padding: 6px;
+}
+
+.dab-logo-placeholder {
+  width: 192px;
+  height: 192px;
+  flex: 0 0 192px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  border: 1px dashed #30363d;
+  border-radius: 6px;
+  color: #6e7681;
+  font-size: 14px;
+  text-align: center;
+  padding: 6px;
+}
+
+.dab-info-text {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
 }
 
 .dab-ensemble {
