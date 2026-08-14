@@ -61,10 +61,11 @@ export default function App() {
   const [scanDone, setScanDone] = useState(0);
   const [scanProgress, setScanProgress] = useState('');
   const [scanSensitivity, setScanSensitivity] = useState('normal');
-  const [scanHits, setScanHits] = useState([]);
+  const [scanFound, setScanFound] = useState(null);
   const [scanError, setScanError] = useState('');
-  const [savePrompt, setSavePrompt] = useState(null);
-  const [saveName, setSaveName] = useState('');
+  const [scanBand, setScanBand] = useState('2m');
+  const [scanNoiseFloor, setScanNoiseFloor] = useState(null);
+  const [scanName, setScanName] = useState('');
   const [dabInfo, setDabInfo] = useState(null);
   const [dabServices, setDabServices] = useState([]);
   const [dabService, setDabService] = useState('');
@@ -96,6 +97,7 @@ export default function App() {
   const tuneFreqRef = useRef(null);
   const fineRef = useRef({ mode: 'fm', tuneStep: 100_000, nfmFreq: '145.000', amFreq: '7.100' });
   fineRef.current = { mode, tuneStep, nfmFreq, amFreq };
+  const tuneScanHitRef = useRef(null);
 
   const loadPresets = (m) => {
     presetsModeRef.current = m;
@@ -298,17 +300,32 @@ export default function App() {
               setScanTotal(msg.total || 0);
               setScanDone(0);
               setScanProgress('');
+              setScanFound(null);
+            } else if (msg.kind === 'floor') {
+              if (msg.noiseFloor != null) setScanNoiseFloor(msg.noiseFloor);
             } else if (msg.kind === 'progress') {
               setScanDone(msg.done || 0);
               setScanTotal(msg.total || 0);
-              setScanProgress(msg.freq ? `${(msg.freq / 1e6).toFixed(1)} MHz` : '');
+              setScanProgress(msg.freq ? `${(msg.freq / 1e6).toFixed(mode === 'nfm' ? 3 : 1)} MHz` : '');
+            } else if (msg.kind === 'hit') {
+              // Tune straight to the found signal so the operator can listen
+              // while the modal asks whether to save it or keep scanning.
+              setScanFound({ freq: msg.freq, signal: msg.signal });
+              if (msg.noiseFloor != null) setScanNoiseFloor(msg.noiseFloor);
+              if (tuneScanHitRef.current) tuneScanHitRef.current(msg.freq);
             } else if (msg.kind === 'done') {
               setScanning(false);
+              setScanFound(null);
               setScanDone(msg.total || 0);
-              if (msg.hits) setScanHits(msg.hits);
+              setStatus(
+                msg.aborted
+                  ? 'Scan stopped'
+                  : `Scan complete — ${msg.found || 0} signal${msg.found === 1 ? '' : 's'} found`
+              );
             } else if (msg.kind === 'error') {
               setScanError(msg.message || 'Scan failed');
               setScanning(false);
+              setScanFound(null);
             }
           }
         } else {
@@ -331,29 +348,70 @@ export default function App() {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   };
 
-  const SCAN_SENSITIVITY = { high: 0.08, normal: 0.12, low: 0.18 };
+  const SCAN_SENSITIVITY = { high: 1.5, normal: 2.5, low: 5 };
+  const NFM_BANDS = {
+    '2m': { label: '2m · 144–148 MHz', start: 144_000_000, stop: 148_000_000, step: 12_500 },
+    '70cm': { label: '70cm · 430–440 MHz', start: 430_000_000, stop: 440_000_000, step: 25_000 },
+  };
+
+  const fmtHitFreq = (freq) => (freq / 1e6).toFixed(mode === 'nfm' ? 3 : 1);
+
+  // Tunes the receiver to a frequency found by the scan so the operator can
+  // listen while the modal asks whether to save it or continue. The paused
+  // scan stays intact: the server only aborts a scan on tune when it is not
+  // paused.
+  const tuneScanHit = async (freq) => {
+    const f = fmtHitFreq(freq);
+    if (mode === 'nfm') setNfmFreq(f);
+    else setFreq(f);
+    try {
+      const player = await ensurePlayer();
+      player.setVolume(volume);
+      let ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) ws = await openWs();
+      send({
+        op: 'tune',
+        mode,
+        freq: Math.round(freq),
+        host,
+        port: parseInt(port, 10),
+        gain: gain.trim() === '' ? undefined : Number(gain),
+        squelch: mode === 'nfm' ? squelch : 0,
+      });
+      player.start();
+      playingRef.current = true;
+      setPlaying(true);
+    } catch (err) {
+      setScanError(err.message || 'Tune failed');
+    }
+  };
+  tuneScanHitRef.current = tuneScanHit;
 
   const startScan = async () => {
-    if (mode !== 'fm' || scanning || busy) return;
+    if ((mode !== 'fm' && mode !== 'nfm') || scanning || busy) return;
     setScanning(true);
-    setScanHits([]);
+    setScanFound(null);
+    setScanName('');
     setScanDone(0);
     setScanTotal(0);
     setScanProgress('');
     setScanError('');
+    setScanNoiseFloor(null);
     try {
       let ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) ws = await openWs();
       if (playingRef.current && playerRef.current) playerRef.current.stop();
       playingRef.current = false;
       setPlaying(false);
+      const band = NFM_BANDS[scanBand];
       send({
         op: 'scan',
-        start: 87_500_000,
-        stop: 108_000_000,
-        step: 100_000,
-        threshold: SCAN_SENSITIVITY[scanSensitivity] || 0.12,
-        dwell: 200,
+        mode,
+        start: mode === 'nfm' ? band.start : 87_500_000,
+        stop: mode === 'nfm' ? band.stop : 108_000_000,
+        step: mode === 'nfm' ? band.step : 100_000,
+        threshold: SCAN_SENSITIVITY[scanSensitivity] || 2.5,
+        dwell: mode === 'nfm' ? 150 : 200,
         host,
         port: parseInt(port, 10),
         gain: gain.trim() === '' ? undefined : Number(gain),
@@ -365,39 +423,27 @@ export default function App() {
   };
 
   const stopScan = () => {
-    if (!scanning) return;
+    if (!scanning && !scanFound) return;
     setScanning(false);
+    setScanFound(null);
     send({ op: 'scanStop' });
   };
 
-  const playHit = (hit) => {
-    const f = (hit.freq / 1e6).toFixed(1);
-    setFreq(f);
-    play(f, 'fm');
+  const continueScan = () => {
+    setScanFound(null);
+    send({ op: 'scanContinue' });
   };
 
-  const clearScanHits = () => {
-    setScanHits([]);
-    setScanDone(0);
-    setScanTotal(0);
-    setScanProgress('');
-  };
-
-  const saveHit = (hit) => {
-    setSavePrompt(hit);
-    setSaveName('');
-  };
-
-  const confirmSaveHit = () => {
-    if (!savePrompt) return;
-    const name = saveName.trim() || `FM ${(savePrompt.freq / 1e6).toFixed(1)} MHz`;
+  const saveScanHit = () => {
+    if (!scanFound) return;
+    const name = scanName.trim() || `${mode === 'nfm' ? 'NFM' : 'FM'} ${fmtHitFreq(scanFound.freq)} MHz`;
     const next = sortPresets([
       ...presets,
-      { name, freq: (savePrompt.freq / 1e6).toFixed(1), mode: 'fm' },
+      { name, freq: fmtHitFreq(scanFound.freq), mode },
     ]);
     setPresets(next);
-    persistPresets('fm', next);
-    setSavePrompt(null);
+    persistPresets(mode, next);
+    continueScan();
   };
 
   const play = async (freqOverride, modeOverride, serviceOverride) => {
@@ -503,6 +549,7 @@ export default function App() {
       setScanning(false);
       send({ op: 'scanStop' });
     }
+    setScanFound(null);
     setMode(m);
     loadPresets(m);
     if (playingRef.current) {
@@ -827,11 +874,13 @@ export default function App() {
             )}
           </div>
 
-          {mode === 'fm' && (
+          {(mode === 'fm' || mode === 'nfm') && (
             <div className="scan">
               <div className="scan-title">
-                FM band scan
-                <span className="scan-help">87.5–108 MHz</span>
+                {mode === 'nfm' ? 'NFM band scan' : 'FM band scan'}
+                <span className="scan-help">
+                  {mode === 'nfm' ? NFM_BANDS[scanBand].label : '87.5–108 MHz'}
+                </span>
               </div>
               {scanning ? (
                 <div className="scan-progress">
@@ -849,6 +898,15 @@ export default function App() {
                 </div>
               ) : (
                 <div className="scan-start">
+                  {mode === 'nfm' && (
+                    <select value={scanBand} onChange={(e) => setScanBand(e.target.value)}>
+                      {Object.entries(NFM_BANDS).map(([key, b]) => (
+                        <option key={key} value={key}>
+                          {b.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                   <select
                     value={scanSensitivity}
                     onChange={(e) => setScanSensitivity(e.target.value)}
@@ -858,33 +916,11 @@ export default function App() {
                     <option value="low">Low sensitivity</option>
                   </select>
                   <button className="primary" onClick={startScan} disabled={busy}>
-                    Scan FM band
+                    {mode === 'nfm' ? 'Scan NFM band' : 'Scan FM band'}
                   </button>
                 </div>
               )}
               {scanError && <div className="scan-error">{scanError}</div>}
-              {scanHits.length > 0 && (
-                <div className="scan-hits">
-                  <div className="scan-hits-title">
-                    <span>Found {scanHits.length} station{scanHits.length === 1 ? '' : 's'}</span>
-                    <button className="scan-done" onClick={clearScanHits}>Done</button>
-                  </div>
-                  {scanHits.map((h, i) => (
-                    <div className="scan-hit" key={i}>
-                      <button
-                        className={`scan-hit-tune${playing && freqMatch((h.freq / 1e6).toFixed(1), currentFreq) ? ' active' : ''}`}
-                        onClick={() => playHit(h)}
-                      >
-                        <span className="station-name">{(h.freq / 1e6).toFixed(1)} MHz</span>
-                        <span className="scan-hit-signal">{(h.signal * 100).toFixed(0)}%</span>
-                      </button>
-                      <button className="scan-hit-save" onClick={() => saveHit(h)} title="Save to stations">
-                        +
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
           )}
 
@@ -1017,25 +1053,31 @@ export default function App() {
 
       <div className={`status ${status.startsWith('Error') ? 'error' : ''}`}>{status}</div>
 
-      {savePrompt && (
-        <div className="modal-overlay" onClick={() => setSavePrompt(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-title">
-              Save station {(savePrompt.freq / 1e6).toFixed(1)} MHz
+      {scanFound && (
+        <div className="modal-overlay">
+          <div className="modal scan-modal">
+            <div className="modal-title">Signal found</div>
+            <div className="scan-modal-freq">{fmtHitFreq(scanFound.freq)} MHz</div>
+            <div className="scan-modal-meta">
+              Signal {(scanFound.signal * 100).toFixed(0)}%
+              {mode === 'nfm' && scanNoiseFloor != null
+                ? ` · noise floor ${Math.round(scanNoiseFloor * 100)}%`
+                : ''}
             </div>
             <label>
-              Name
+              Station name
               <input
-                value={saveName}
-                onChange={(e) => setSaveName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && confirmSaveHit()}
-                placeholder={`FM ${(savePrompt.freq / 1e6).toFixed(1)}`}
+                value={scanName}
+                onChange={(e) => setScanName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && saveScanHit()}
+                placeholder={`${mode === 'nfm' ? 'NFM' : 'FM'} ${fmtHitFreq(scanFound.freq)} MHz`}
                 autoFocus
               />
             </label>
             <div className="modal-actions">
-              <button className="primary" onClick={confirmSaveHit}>Save</button>
-              <button onClick={() => setSavePrompt(null)}>Cancel</button>
+              <button className="primary" onClick={saveScanHit}>Save & Continue</button>
+              <button onClick={continueScan}>Continue</button>
+              <button onClick={stopScan}>Stop scan</button>
             </div>
           </div>
         </div>

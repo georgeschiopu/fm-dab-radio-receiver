@@ -1,10 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import net from 'node:net';
 import fs from 'node:fs';
 import { RtlTcpClient, CMD, DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
 import { FmDecoder, AmDecoder, LinearResampler, ChannelPowerMeter } from './dsp.js';
 import { SpectrumAnalyzer, DEFAULT_BINS } from './spectrum.js';
 import { channelBlockForFreq, channelFreqKHz, DabReceiver } from './dab.js';
+import { AudioStreamManager, scanThresholdFor } from './audioStream.js';
 import { imageSizeOfFile } from './fmLogos.js';
 import {
   getPresets,
@@ -77,6 +78,18 @@ function synthNoiseIq(samples, seed = 12345) {
   for (let i = 0; i < samples; i++) {
     buf[i * 2] = Math.round(128 + (rand() - 0.5) * 200);
     buf[i * 2 + 1] = Math.round(128 + (rand() - 0.5) * 200);
+  }
+  return buf;
+}
+
+// Strong unmodulated NFM carrier at +offset Hz (inside the scanner's channel
+// filter), used to simulate a live signal on a swept channel.
+function synthNfmCarrier(samples, { fs = 1_000_000, offset = 3000, amp = 110 } = {}) {
+  const buf = Buffer.alloc(samples * 2);
+  for (let s = 0; s < samples; s++) {
+    const ph = (2 * Math.PI * offset * s) / fs;
+    buf[s * 2] = 128 + Math.round(amp * Math.cos(ph));
+    buf[s * 2 + 1] = 128 + Math.round(amp * Math.sin(ph));
   }
   return buf;
 }
@@ -748,5 +761,153 @@ describe('Logo image dimensions', () => {
         /* ignore */
       }
     }
+  });
+});
+
+describe('Scanner noise-floor threshold', () => {
+  it('scales the measured noise floor by the sensitivity factor', () => {
+    expect(scanThresholdFor(0.05, 2.5)).toBeCloseTo(0.125, 5);
+    expect(scanThresholdFor(0.05, 1.5)).toBeCloseTo(0.075, 5);
+    expect(scanThresholdFor(0, 2.5)).toBe(0.01); // degenerate 0 floor still has a floor
+    expect(scanThresholdFor(0.05)).toBeCloseTo(0.125, 5); // default factor
+  });
+});
+
+// Drives AudioStreamManager's scan path with a fake rtl_tcp, feeding IQ for
+// each channel (settle + dwell samples) and asserting on the emitted events.
+function setupScanManager({ mode = 'nfm' } = {}) {
+  const mgr = new AudioStreamManager();
+  mgr.mode = mode;
+  mgr.connected = true;
+  mgr.rtl = { tune: vi.fn() };
+  mgr.decoder = {
+    inRate: mode === 'nfm' ? 1_000_000 : DEFAULT_SAMPLE_RATE,
+    process: vi.fn(() => new Float32Array(0)),
+    setChannelOffset: vi.fn(),
+    outputRms: 0,
+    audioRms: 0,
+    bandRms: 0,
+  };
+  const events = [];
+  mgr.on('scan', (e) => events.push(e));
+  return { mgr, events };
+}
+
+function feedChannel(mgr, iq) {
+  // The active settle window (50 ms for the sweep, 600 ms for peak refinement)
+  // is flushed before the dwell measurement begins, so feed it as its own chunk.
+  const settle = mgr.scan ? mgr.scan.settleLeft : Math.round(mgr.decoder.inRate * 0.05);
+  mgr._onIq(iq.subarray(0, settle * 2));
+  mgr._onIq(iq.subarray(settle * 2));
+}
+
+// Feeds one settle+dwell step tuned for whatever channel the scan is currently
+// on, placing a fixed-RF carrier `F_c` at the correct baseband offset. During
+// the peak-refinement pass the scan is on a fine candidate grid, so this keeps
+// the synthetic signal at a fixed frequency, exactly like a real on-air signal.
+function feedScanTone(mgr, F_c, amp = 110) {
+  const s = mgr.scan;
+  if (!s) return;
+  const nom = s.refining ? s.refine.candidates[s.refine.idx] : s.freqs[s.idx];
+  const offset = F_c - (nom + s.ifOffset);
+  const rate = mgr.decoder.inRate;
+  feedChannel(mgr, synthNfmCarrier(s.settleLeft + s.dwellSamples, { fs: rate, offset, amp }));
+}
+
+function feedScanNoise(mgr, seed = 12345) {
+  const s = mgr.scan;
+  if (!s) return;
+  const rate = mgr.decoder.inRate;
+  feedChannel(mgr, synthNoiseIq(s.settleLeft + s.dwellSamples, seed));
+}
+
+describe('NFM interactive scanner', () => {
+  it('pauses on a signal and finishes the sweep after resume', () => {
+    const { mgr, events } = setupScanManager({ mode: 'nfm' });
+    const start = 144_000_000;
+    const step = 25_000;
+    const nChannels = 8;
+    const stop = start + (nChannels - 1) * step;
+    const res = mgr.startScan({ startFreq: start, stopFreq: stop, stepHz: step, threshold: 2.5, dwellMs: 10 });
+    expect(res.total).toBe(nChannels);
+
+    // A strong signal 3 kHz above channel 6's LO (clear of the DC spike).
+    const F_c = start + 6 * step + mgr.scan.ifOffset + 3_000;
+    let guard = 0;
+    while (mgr.scanning && !mgr.scan.paused && guard++ < 300) feedScanTone(mgr, F_c);
+
+    const hit = events.find((e) => e.kind === 'hit');
+    expect(hit).toBeTruthy();
+    expect(hit.freq).toBe(start + 6 * step); // refined peak, not the coarse channel
+    expect(hit.signal).toBeGreaterThan(0.1);
+    expect(mgr.scanning).toBe(true);
+    expect(mgr.scan.paused).toBe(true);
+
+    // The operator decides to keep scanning.
+    const cont = mgr.resumeScan();
+    expect(cont.total).toBe(nChannels);
+
+    // Finish the remaining channel.
+    guard = 0;
+    while (mgr.scanning && !events.some((e) => e.kind === 'done') && guard++ < 50) feedScanTone(mgr, F_c);
+
+    const done = events.find((e) => e.kind === 'done');
+    expect(done).toBeTruthy();
+    expect(done.total).toBe(nChannels);
+    expect(done.found).toBe(1);
+    expect(done.aborted).toBeFalsy();
+    expect(mgr.scanning).toBe(false);
+  });
+
+  it('reports the frequency of the strongest signal, not the stale coarse hit', () => {
+    const { mgr, events } = setupScanManager({ mode: 'nfm' });
+    const start = 144_000_000;
+    const step = 25_000;
+    mgr.startScan({ startFreq: start, stopFreq: start + 7 * 25_000, stepHz: step, threshold: 2.5, dwellMs: 10 });
+
+    // A real signal 1 kHz inside the bottom of channel 6's coarse window: the
+    // coarse dwell fires on channel 6, but the in-window power peaks half a
+    // step below, so the refinement must report that half-step channel.
+    const F_c = start + 6 * step - 1_000;
+    let guard = 0;
+    while (mgr.scanning && !mgr.scan.paused && guard++ < 300) feedScanTone(mgr, F_c);
+
+    const hit = events.find((e) => e.kind === 'hit');
+    expect(hit).toBeTruthy();
+    expect(hit.freq).toBe(start + 6 * step - 12_500); // half-step below the coarse hit
+    expect(mgr.scan.paused).toBe(true);
+  });
+
+  it('completes with no hits on a quiet band', () => {
+    const { mgr, events } = setupScanManager({ mode: 'nfm' });
+    const start = 144_000_000;
+    const step = 25_000;
+    const nChannels = 8;
+    const stop = start + (nChannels - 1) * step;
+    mgr.startScan({ startFreq: start, stopFreq: stop, stepHz: step, threshold: 2.5, dwellMs: 10 });
+
+    let guard = 0;
+    while (mgr.scanning && guard++ < 200) feedScanNoise(mgr, 7000 + guard);
+
+    expect(events.find((e) => e.kind === 'hit')).toBeFalsy();
+    const done = events.find((e) => e.kind === 'done');
+    expect(done).toBeTruthy();
+    expect(done.found).toBe(0);
+  });
+
+  it('stopScan aborts a paused scan', () => {
+    const { mgr } = setupScanManager({ mode: 'nfm' });
+    const start = 144_000_000;
+    mgr.startScan({ startFreq: start, stopFreq: start + 7 * 25_000, stepHz: 25_000, threshold: 2.5, dwellMs: 10 });
+
+    const F_c = start + 7 * 25_000 + mgr.scan.ifOffset + 3_000; // last channel
+    let guard = 0;
+    while (mgr.scanning && !mgr.scan.paused && guard++ < 300) feedScanTone(mgr, F_c);
+
+    expect(mgr.scan.paused).toBe(true);
+    const r = mgr.stopScan();
+    expect(r.found).toBe(1);
+    expect(mgr.scanning).toBe(false);
+    expect(mgr.scan).toBe(null);
   });
 });

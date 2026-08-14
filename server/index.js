@@ -254,6 +254,7 @@ wss.on('connection', (ws, req) => {
       const level = msg.level !== undefined ? Number(msg.level) : 0;
       if (Number.isFinite(level)) manager.setSquelch(level);
     } else if (msg.op === 'scan') {
+      const mode = msg.mode === 'nfm' ? 'nfm' : 'fm';
       const start = Math.round(Number(msg.start));
       const stop = Math.round(Number(msg.stop));
       const host = msg.host || DEFAULT_HOST;
@@ -265,10 +266,10 @@ wss.on('connection', (ws, req) => {
           !manager.running ||
           manager.host !== host ||
           manager.port !== port ||
-          manager.mode !== 'fm' ||
+          manager.mode !== mode ||
           !manager.connected
         ) {
-          await manager.start({ mode: 'fm', host, port, freq: start, gain });
+          await manager.start({ mode, host, port, freq: start, gain });
         } else {
           manager.setGain(gain);
         }
@@ -279,13 +280,16 @@ wss.on('connection', (ws, req) => {
           threshold: msg.threshold,
           dwellMs: msg.dwell,
         });
-        if (!result) ws.send(JSON.stringify({ type: 'scan', kind: 'error', message: 'Scan requires FM mode and a connected rtl_tcp' }));
+        if (!result) ws.send(JSON.stringify({ type: 'scan', kind: 'error', message: 'Scan requires FM or NFM mode and a connected rtl_tcp' }));
       } catch (err) {
         ws.send(JSON.stringify({ type: 'scan', kind: 'error', message: `rtl_tcp: ${err.message}` }));
       }
+    } else if (msg.op === 'scanContinue') {
+      const r = manager.resumeScan();
+      if (!r) ws.send(JSON.stringify({ type: 'scan', kind: 'error', message: 'No paused scan to continue' }));
     } else if (msg.op === 'scanStop') {
       const r = manager.stopScan();
-      if (r) ws.send(JSON.stringify({ type: 'scan', kind: 'done', hits: r.hits, total: r.total, aborted: true }));
+      if (r) ws.send(JSON.stringify({ type: 'scan', kind: 'done', found: r.found, total: r.total, aborted: true }));
     } else if (msg.op === 'stop') {
       clearSlides();
       manager.stop();
