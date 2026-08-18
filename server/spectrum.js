@@ -5,7 +5,7 @@ export const DB_MIN = -120;
 export const DB_STEP = 0.5; // dB per byte
 
 export class SpectrumAnalyzer {
-  constructor({ fftSize = 2048, bins = DEFAULT_BINS, sampleRate = DEFAULT_SAMPLE_RATE, fps = 20 } = {}) {
+  constructor({ fftSize = 2048, bins = DEFAULT_BINS, sampleRate = DEFAULT_SAMPLE_RATE, fps = 20, fftEvery = 1 } = {}) {
     if (fftSize % bins !== 0) throw new Error(`fftSize ${fftSize} must be a multiple of bins ${bins}`);
     this.fftSize = fftSize;
     this.bins = bins;
@@ -17,11 +17,17 @@ export class SpectrumAnalyzer {
     for (let i = 0; i < fftSize; i++) this.win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (fftSize - 1));
     this.pos = 0;
     this.group = fftSize / bins;
-    this.avgCount = Math.max(1, Math.round((sampleRate / fftSize) / fps));
+    // At high sample rates (1 Msps for NFM/AM) the FFT would otherwise run on
+    // every 2048-sample block (~488/s) even though only 1 in ~24 lines is
+    // emitted. `fftEvery` strides the FFT to every Nth block, cutting the
+    // waterfall's CPU cost without changing the emitted line rate.
+    this.fftEvery = Math.max(1, Math.round(fftEvery) || 1);
+    this.avgCount = Math.max(1, Math.round((sampleRate / fftSize) / this.fftEvery / fps));
     this.acc = new Float64Array(bins);
     this.accCount = 0;
     this.line = new Uint8Array(bins);
     this.dbRef = 10 * Math.log10((fftSize / 2) * (fftSize / 2));
+    this.blocks = 0;
   }
 
   reset() {
@@ -30,6 +36,7 @@ export class SpectrumAnalyzer {
     this.pos = 0;
     this.acc.fill(0);
     this.accCount = 0;
+    this.blocks = 0;
   }
 
   // chunk: Node Buffer of interleaved unsigned 8-bit I/Q
@@ -97,6 +104,11 @@ export class SpectrumAnalyzer {
     const { fftSize, group, bins, win } = this;
     const re = this.re;
     const im = this.im;
+    // Stride the FFT: blocks that aren't a multiple of fftEvery still fill the
+    // sample buffer (so the next computed FFT sees the freshest window), but we
+    // skip the expensive transform on the intermediate blocks entirely.
+    this.blocks++;
+    if (this.fftEvery > 1 && this.blocks % this.fftEvery !== 0) return;
     for (let i = 0; i < fftSize; i++) {
       re[i] *= win[i];
       im[i] *= win[i];

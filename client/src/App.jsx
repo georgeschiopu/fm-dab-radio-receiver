@@ -6,6 +6,11 @@ import Waterfall from './Waterfall.jsx';
 // Presets are stored per mode and per user so FM / NFM station lists stay separate.
 const presetKey = (user, m) => `sdr-${user}-${m}-stations`;
 
+// NFM/AM waterfall: the tuner stays parked and the tuned channel is moved
+// digitally inside the captured 1 MHz band, so the waterfall pans a sub-window
+// around the tuned frequency with a fixed center marker.
+const NFM_AM_VISIBLE_SPAN = 600_000;
+
 // Stations are always shown sorted alphabetically by name (case-insensitive).
 const sortPresets = (list) =>
   [...list].sort((a, b) =>
@@ -574,7 +579,7 @@ export default function App() {
   };
 
   const changeSquelch = (e) => {
-    const v = Number(e.target.value) / 100;
+    const v = Number(e.target.value) / 5;
     setSquelch(v);
     send({ op: 'squelch', level: v });
   };
@@ -681,7 +686,7 @@ export default function App() {
   if (!authChecked) {
     return (
       <div className="card auth-card">
-        <h1>SDR Receiver</h1>
+        <h1>ODV Project</h1>
         <div className="auth-loading">Checking session…</div>
       </div>
     );
@@ -690,7 +695,7 @@ export default function App() {
   if (!user) {
     return (
       <div className="card auth-card">
-        <h1>SDR Receiver</h1>
+        <h1>ODV Project</h1>
         <form className="auth-form" onSubmit={submitAuth}>
           <div className="auth-tabs">
             <button
@@ -744,7 +749,7 @@ export default function App() {
   return (
     <div className="card">
       <div className="topbar">
-        <h1>SDR Receiver</h1>
+        <h1>ODV Project</h1>
         <div className="topbar-user">
           <span>{user}</span>
           <button onClick={logout}>Logout</button>
@@ -824,13 +829,13 @@ export default function App() {
                     <input
                       type="range"
                       min="0"
-                      max="100"
+                      max="5"
                       step="1"
-                      value={Math.round(squelch * 100)}
+                      value={Math.round(squelch * 5)}
                       onChange={changeSquelch}
                     />
                     <span className="gain-value">
-                      {squelch === 0 ? 'Off' : `${Math.round(squelch * 100)}`}
+                      {squelch === 0 ? 'Off' : `${Math.round(squelch * 5)}`}
                     </span>
                   </div>
                 </label>
@@ -963,20 +968,47 @@ export default function App() {
           {mode === 'fm' || mode === 'nfm' || mode === 'am' ? (
             <div className="waterfall-wrap">
               <div className="waterfall-title">
-                Spectrum {centerHz ? `±${(span / 2 / 1e6).toFixed(2)} MHz around ${fmtMHz(centerHz)}` : '—'}
+                {mode === 'nfm' || mode === 'am'
+                  ? `Spectrum ±${(NFM_AM_VISIBLE_SPAN / 2 / 1e6).toFixed(2)} MHz around ${currentFreq} MHz`
+                  : centerHz
+                    ? `Spectrum ±${(span / 2 / 1e6).toFixed(2)} MHz around ${fmtMHz(centerHz)}`
+                    : 'Spectrum —'}
               </div>
               <div className="waterfall-canvas">
                 {mode === 'fm' ? (
                   <SpectrumAnalyzer ref={spectrumRef} bins={bins} height={160} />
                 ) : (
-                  <Waterfall ref={spectrumRef} bins={bins} height={160} />
+                  <Waterfall
+                    ref={spectrumRef}
+                    bins={bins}
+                    height={160}
+                    span={span}
+                    centerHz={centerHz}
+                    freqHz={Math.round((parseFloat(currentFreq) || 0) * 1e6)}
+                    visibleSpan={NFM_AM_VISIBLE_SPAN}
+                  />
                 )}
-                {centerHz && <div className="waterfall-marker" style={{ left: `${tunePct}%` }} />}
+                {centerHz && (
+                  <div
+                    className="waterfall-marker"
+                    style={{ left: mode === 'nfm' || mode === 'am' ? '50%' : `${tunePct}%` }}
+                  />
+                )}
               </div>
               <div className="waterfall-axis">
-                <span>{centerHz ? fmtMHz(centerHz - span / 2) : ''}</span>
-                <span className="waterfall-center">{centerHz ? fmtMHz(centerHz) : ''}</span>
-                <span>{centerHz ? fmtMHz(centerHz + span / 2) : ''}</span>
+                {mode === 'nfm' || mode === 'am' ? (
+                  <>
+                    <span>{fmtMHz(Math.round((parseFloat(currentFreq) || 0) * 1e6) - NFM_AM_VISIBLE_SPAN / 2)}</span>
+                    <span className="waterfall-center">{(parseFloat(currentFreq) || 0).toFixed(4)} MHz</span>
+                    <span>{fmtMHz(Math.round((parseFloat(currentFreq) || 0) * 1e6) + NFM_AM_VISIBLE_SPAN / 2)}</span>
+                  </>
+                ) : (
+                  <>
+                    <span>{centerHz ? fmtMHz(centerHz - span / 2) : ''}</span>
+                    <span className="waterfall-center">{centerHz ? fmtMHz(centerHz) : ''}</span>
+                    <span>{centerHz ? fmtMHz(centerHz + span / 2) : ''}</span>
+                  </>
+                )}
               </div>
             </div>
           ) : (

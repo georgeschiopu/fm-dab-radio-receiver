@@ -64,7 +64,7 @@ describe('App', () => {
     render(<App />);
     expect(await screen.findByLabelText('Username')).toBeInTheDocument();
     expect(screen.getByLabelText('Password')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'SDR Receiver' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'ODV Project' })).toBeInTheDocument();
   });
 
   it('renders the main UI with stations in their own right column', async () => {
