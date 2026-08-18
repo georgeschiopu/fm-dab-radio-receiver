@@ -128,7 +128,15 @@ export class AudioStreamManager extends EventEmitter {
       this.decoder = new FmDecoder();
     }
     this.decoder.reset();
-    this.spec = new SpectrumAnalyzer({ sampleRate: mode === 'nfm' || mode === 'am' ? AM_SAMPLE_RATE : DEFAULT_SAMPLE_RATE });
+    // NFM/AM capture the whole 1 Msps band; a full-rate FFT on every 2048-sample
+    // block (~488/s) is far more waterfall than the 20 lines/s display needs and
+    // steals CPU from the audio path while the user rides the tuning knob. Stride
+    // the FFT so the waterfall stays smooth but costs a fraction of the CPU.
+    const nfmAm = mode === 'nfm' || mode === 'am';
+    this.spec = new SpectrumAnalyzer({
+      sampleRate: nfmAm ? AM_SAMPLE_RATE : DEFAULT_SAMPLE_RATE,
+      fftEvery: nfmAm ? 4 : 1,
+    });
     this.spec.onSpectrum = (line) => {
       if (this.onSpectrum) this.onSpectrum(line);
     };

@@ -15,10 +15,18 @@ const AGC_MAX_GAIN = 60;
 // Squelch: an unlocked discriminator produces phase jumps near +/- pi, while
 // a locked NFM carrier stays within a few hundred Hz of the center. We count
 // the fraction of samples whose instantaneous frequency exceeds SQUELCH_RAD
-// and open/close the gate with hysteresis.
-const SQUELCH_RAD = 1.0; // > ~159 kHz instantaneous offset = noise jump
-const SQUELCH_OPEN = 0.01; // jump ratio below which a carrier is present
-const SQUELCH_CLOSE = 0.05; // jump ratio above which it is pure noise
+// and open/close the gate with hysteresis. Measured over the real 6 kHz
+// channel filter at 50 kHz: pure noise yields a jump ratio of ~0.095 and a
+// locked carrier ~0.000, so the thresholds are anchored well below the noise
+// floor to keep the gate firmly closed on noise while letting weak-but-locked
+// carriers open it. The ratio is averaged over a rolling window
+// (SQUELCH_WINDOW decimated samples, ~40 ms) so a single short chunk cannot
+// flip the gate (flapping = popping).
+const SQUELCH_RAD = 1.0; // > ~8 kHz instantaneous offset at the 50 kHz discriminator = noise jump
+const SQUELCH_WINDOW = 2048; // decimated samples averaged per squelch decision (~40 ms)
+const SQUELCH_OPEN_MAX = 0.05; // loosest: opens on ratios below this (noise ~0.095 stays closed)
+const SQUELCH_OPEN_MIN = 0.015; // tightest: only a clean locked carrier opens the gate
+const SQUELCH_HYST = 0.03; // hysteresis band; close threshold stays below the noise ratio
 
 // Linear interpolator for rational rate conversion (50 kHz -> 48 kHz).
 // The audio is already low-passed well below Nyquist, so linear interp is
@@ -266,7 +274,10 @@ export class FmDecoder {
     this.agc = agc;
     this.squelch = 0;
     this.squelchLevel = 0;
-    this.squelchClose = SQUELCH_CLOSE;
+    this.squelchOpenThr = SQUELCH_OPEN_MIN;
+    this.squelchCloseThr = SQUELCH_OPEN_MIN + SQUELCH_HYST;
+    this.sqJumps = 0;
+    this.sqCount = 0;
     this.agcGain = agc ? 1 : gain;
     this.gate = 1;
     this.squelchOpen = false;
@@ -277,6 +288,8 @@ export class FmDecoder {
     this.mixOffset = 0;
     this.mixPhase = 0;
     this.mixInc = 0;
+    this.mixCos = 1;
+    this.mixSin = 0;
     this.setSquelch(squelch);
   }
 
@@ -287,8 +300,18 @@ export class FmDecoder {
     const wasOn = this.squelch;
     this.squelchLevel = v;
     this.squelch = v > 0 ? 1 : 0;
-    // Higher level -> closer to the open threshold -> tighter squelch.
-    this.squelchClose = this.squelch ? SQUELCH_OPEN + 0.2 * (1 - v) : SQUELCH_CLOSE;
+    // Higher level -> lower (tighter) open threshold: only a clean locked
+    // carrier opens the gate. Always keep a hysteresis band so the gate never
+    // flaps around a single point (that was the source of the popping).
+    if (this.squelch) {
+      this.squelchOpenThr = SQUELCH_OPEN_MIN + (1 - v) * (SQUELCH_OPEN_MAX - SQUELCH_OPEN_MIN);
+      this.squelchCloseThr = this.squelchOpenThr + SQUELCH_HYST;
+    } else {
+      this.squelchOpenThr = SQUELCH_OPEN_MIN;
+      this.squelchCloseThr = SQUELCH_OPEN_MIN + SQUELCH_HYST;
+    }
+    this.sqJumps = 0;
+    this.sqCount = 0;
     if (this.squelch && !wasOn) this.gate = 0; // start muted, no noise burst
     if (!this.squelch) {
       this.squelchOpen = false;
@@ -304,6 +327,11 @@ export class FmDecoder {
     const off = Math.round(Number(offsetHz) || 0);
     this.mixOffset = off;
     this.mixInc = off === 0 ? 0 : (2 * Math.PI * off) / this.inRate;
+    // Precompute the per-sample phasor rotation for the recursive mixer so the
+    // hot loop never calls trig (see process(): ~2M cos/sin per second at
+    // 1 Msps was dominating the event loop and glitching audio while tuning).
+    this.mixCos = Math.cos(this.mixInc);
+    this.mixSin = -Math.sin(this.mixInc);
   }
 
   reset() {
@@ -319,6 +347,8 @@ export class FmDecoder {
     this.outputRms = 0;
     this.agcGain = this.agc ? 1 : this.gain;
     this.squelchOpen = false;
+    this.sqJumps = 0;
+    this.sqCount = 0;
     this.gate = this.squelch ? 0 : 1;
     if (this.resampler) this.resampler.reset();
     this.mixPhase = 0;
@@ -349,19 +379,26 @@ export class FmDecoder {
     this.dc.xpI = xpI; this.dc.ypI = ypI;
     this.bandRms = Math.sqrt(bandSum / (n * 2));
 
-    // Digitally shift the tuned channel to baseband when mixing is active.
+    // Digitally shift the tuned channel to baseband when mixing is active. The
+    // phasor is advanced recursively (rotate by the precomputed e^{-j*mixInc}
+    // each sample) instead of calling cos/sin per sample, so a 1 Msps chunk
+    // costs a few multiplies instead of a few million trig calls.
     if (this.mixInc !== 0) {
       let ph = this.mixPhase;
+      let cw = Math.cos(ph);
+      let sw = -Math.sin(ph);
+      const rc = this.mixCos;
+      const rs = this.mixSin;
       for (let s = 0; s < n; s++) {
-        const c = Math.cos(ph);
-        const sn = Math.sin(ph);
         const xr = r[s];
         const xi = i[s];
-        r[s] = xr * c + xi * sn;
-        i[s] = xi * c - xr * sn;
-        ph += this.mixInc;
+        r[s] = xr * cw - xi * sw;
+        i[s] = xi * cw + xr * sw;
+        const ncw = cw * rc - sw * rs;
+        sw = cw * rs + sw * rc;
+        cw = ncw;
       }
-      this.mixPhase = ph;
+      this.mixPhase = ph + n * this.mixInc;
     }
 
     // Discriminate only the wanted channel. When channelFirst is set the full
@@ -408,9 +445,18 @@ export class FmDecoder {
     if (this.squelch) {
       let jumps = 0;
       for (let s = 0; s < m.length; s++) if (m[s] > SQUELCH_RAD || m[s] < -SQUELCH_RAD) jumps++;
-      const ratio = jumps / m.length;
-      if (!this.squelchOpen && ratio < SQUELCH_OPEN) this.squelchOpen = true;
-      else if (this.squelchOpen && ratio > this.squelchClose) this.squelchOpen = false;
+      // Accumulate over a rolling window of decimated samples so a single
+      // short chunk cannot flip the gate (flapping = popping). Update the
+      // decision only once per window.
+      this.sqJumps += jumps;
+      this.sqCount += m.length;
+      if (this.sqCount >= SQUELCH_WINDOW) {
+        const ratio = this.sqJumps / this.sqCount;
+        if (!this.squelchOpen && ratio < this.squelchOpenThr) this.squelchOpen = true;
+        else if (this.squelchOpen && ratio > this.squelchCloseThr) this.squelchOpen = false;
+        this.sqJumps = 0;
+        this.sqCount = 0;
+      }
     }
 
     const a = this.channelFirst ? this.audioFir.process(m) : this.dec.processReal(m);
@@ -428,12 +474,18 @@ export class FmDecoder {
       g = Math.min(this.agcGain, AGC_MAX_GAIN);
     }
 
-    // Soft gate (squelch) with fast open / slow close to avoid clicks.
-    const gateTarget = this.squelch && !this.squelchOpen ? 0 : 1;
-    this.gate += (gateTarget - this.gate) * (gateTarget > this.gate ? 0.7 : 0.3);
-
     let out = a;
     if (this.resampler) out = this.resampler.process(a);
+
+    // Soft gate (squelch) with fast open / slow close to avoid clicks. The
+    // coefficient is time-based (per chunk of audio) so rtl_tcp's irregular
+    // chunk sizes don't change how quickly the gate opens or closes.
+    const gateTarget = this.squelch && !this.squelchOpen ? 0 : 1;
+    const gateCoef =
+      gateTarget > this.gate
+        ? 1 - Math.exp(-out.length / (this.audioRate * 0.005)) // ~5 ms open
+        : 1 - Math.exp(-out.length / (this.audioRate * 0.030)); // ~30 ms close
+    this.gate += (gateTarget - this.gate) * gateCoef;
 
     const scaled = new Int16Array(out.length);
     const gg = (g * this.gate) * 32767;
@@ -490,6 +542,8 @@ export class AmDecoder {
     this.mixOffset = 0;
     this.mixPhase = 0;
     this.mixInc = 0;
+    this.mixCos = 1;
+    this.mixSin = 0;
   }
 
   reset() {
@@ -509,6 +563,8 @@ export class AmDecoder {
     const off = Math.round(Number(offsetHz) || 0);
     this.mixOffset = off;
     this.mixInc = off === 0 ? 0 : (2 * Math.PI * off) / this.inRate;
+    this.mixCos = Math.cos(this.mixInc);
+    this.mixSin = -Math.sin(this.mixInc);
   }
 
   // buf: Node Buffer of interleaved unsigned 8-bit I/Q at inRate.
@@ -527,19 +583,26 @@ export class AmDecoder {
     }
     this.bandRms = Math.sqrt(bandSum / (n * 2));
 
-    // Digitally shift the tuned channel to baseband when mixing is active.
+    // Digitally shift the tuned channel to baseband when mixing is active. The
+    // phasor is advanced recursively (rotate by the precomputed e^{-j*mixInc}
+    // each sample) instead of calling cos/sin per sample, so a 1 Msps chunk
+    // costs a few multiplies instead of a few million trig calls.
     if (this.mixInc !== 0) {
       let ph = this.mixPhase;
+      let cw = Math.cos(ph);
+      let sw = -Math.sin(ph);
+      const rc = this.mixCos;
+      const rs = this.mixSin;
       for (let s = 0; s < n; s++) {
-        const c = Math.cos(ph);
-        const sn = Math.sin(ph);
         const xr = r[s];
         const xi = i[s];
-        r[s] = xr * c + xi * sn;
-        i[s] = xi * c - xr * sn;
-        ph += this.mixInc;
+        r[s] = xr * cw - xi * sw;
+        i[s] = xi * cw + xr * sw;
+        const ncw = cw * rc - sw * rs;
+        sw = cw * rs + sw * rc;
+        cw = ncw;
       }
-      this.mixPhase = ph;
+      this.mixPhase = ph + n * this.mixInc;
     }
 
     // Select the tuned channel first so adjacent carriers are removed before

@@ -338,9 +338,34 @@ button:disabled {
   top: 0;
   bottom: 0;
   left: 50%;
-  width: 1px;
-  background: rgba(255, 255, 255, 0.6);
+  width: 2px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.8);
   pointer-events: none;
+}
+
+.waterfall-marker::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -1px;
+  transform: translateX(-50%);
+  border-left: 9px solid transparent;
+  border-right: 9px solid transparent;
+  border-bottom: 12px solid #fff;
+  filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.9));
+}
+
+.waterfall-marker::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: -1px;
+  transform: translateX(-50%);
+  border-left: 9px solid transparent;
+  border-right: 9px solid transparent;
+  border-top: 12px solid #fff;
+  filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.9));
 }
 
 .waterfall-axis {
