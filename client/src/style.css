@@ -771,6 +771,129 @@ button:disabled {
   background: #2ea04322;
 }
 
+/* DAB scan results (grouped by channel, clickable services) */
+.dab-scan-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid #30363d;
+  padding-top: 8px;
+  margin-top: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.dab-scan-results-title {
+  font-size: 12px;
+  color: #8b949e;
+}
+
+.dab-scan-channel {
+  flex-shrink: 0;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.dab-scan-channel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: #161b22;
+}
+
+.dab-scan-channel-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #c9d1d9;
+}
+
+.dab-scan-channel-freq {
+  flex: 1;
+  font-size: 11px;
+  color: #8b949e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dab-scan-save-all {
+  padding: 3px 8px;
+  font-size: 11px;
+  color: #2ea043;
+}
+
+.dab-scan-save-all:hover {
+  background: #2ea04322;
+}
+
+.dab-scan-services {
+  display: flex;
+  flex-direction: column;
+}
+
+.dab-scan-service {
+  display: flex;
+  align-items: stretch;
+  border-top: 1px solid #21262d;
+}
+
+.dab-scan-service.active .dab-scan-service-tune {
+  background: #1f6feb;
+  border-color: #388bfd;
+}
+
+.dab-scan-service.active .dab-scan-service-name {
+  color: #fff;
+}
+
+.dab-scan-service-tune {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  text-align: left;
+  border-radius: 0;
+}
+
+.dab-scan-service-name {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dab-scan-service-tune:hover {
+  background: #161b22;
+}
+
+.dab-scan-service-sid {
+  font-size: 11px;
+  color: #8b949e;
+  flex-shrink: 0;
+}
+
+.dab-scan-star {
+  padding: 0 10px;
+  font-size: 14px;
+  color: #8b949e;
+  border-radius: 0;
+  border-left: 1px solid #21262d;
+}
+
+.dab-scan-star:hover {
+  background: #161b22;
+  color: #d29922;
+}
+
+.dab-scan-star.active {
+  color: #d29922;
+}
+
 /* Save-station modal */
 .modal-overlay {
   position: fixed;

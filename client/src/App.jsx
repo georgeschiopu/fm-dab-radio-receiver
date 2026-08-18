@@ -6,6 +6,9 @@ import Waterfall from './Waterfall.jsx';
 // Presets are stored per mode and per user so FM / NFM station lists stay separate.
 const presetKey = (user, m) => `sdr-${user}-${m}-stations`;
 
+// Last DAB scan results survive a page refresh (per user).
+const dabScanKey = (user) => `sdr-${user}-dab-scan`;
+
 // NFM/AM waterfall: the tuner stays parked and the tuned channel is moved
 // digitally inside the captured 1 MHz band, so the waterfall pans a sub-window
 // around the tuned frequency with a fixed center marker.
@@ -71,6 +74,8 @@ export default function App() {
   const [scanBand, setScanBand] = useState('2m');
   const [scanNoiseFloor, setScanNoiseFloor] = useState(null);
   const [scanName, setScanName] = useState('');
+  const [dabScanResults, setDabScanResults] = useState([]);
+  const [dabScanConfirm, setDabScanConfirm] = useState(false);
   const [dabInfo, setDabInfo] = useState(null);
   const [dabServices, setDabServices] = useState([]);
   const [dabService, setDabService] = useState('');
@@ -132,8 +137,15 @@ export default function App() {
       });
   };
 
-  const enterApp = () => {
+  const enterApp = (username) => {
     setAuthChecked(true);
+    // Restore the last DAB scan results so they survive a page refresh.
+    try {
+      const saved = JSON.parse(localStorage.getItem(dabScanKey(username)) || '[]');
+      if (Array.isArray(saved) && saved.length) setDabScanResults(saved);
+    } catch {
+      /* ignore */
+    }
     fetch('/api/config')
       .then((r) => r.json())
       .then((cfg) => {
@@ -169,7 +181,7 @@ export default function App() {
       })
       .then((d) => {
         setUser(d.username);
-        enterApp();
+        enterApp(d.username);
       })
       .catch(() => setAuthChecked(true));
     return () => {
@@ -178,6 +190,16 @@ export default function App() {
       if (playerRef.current) playerRef.current.close();
     };
   }, []);
+
+  // Keep the last completed DAB scan results across page refreshes (per user).
+  useEffect(() => {
+    if (!user || !dabScanResults.length) return;
+    try {
+      localStorage.setItem(dabScanKey(user), JSON.stringify(dabScanResults));
+    } catch {
+      /* ignore */
+    }
+  }, [user, dabScanResults]);
 
   const persistPresets = (m, list) => {
     try {
@@ -220,7 +242,7 @@ export default function App() {
       setUser(data.username);
       setAuthName('');
       setAuthPass('');
-      enterApp();
+      enterApp(data.username);
     } catch {
       setAuthError('Network error');
     } finally {
@@ -312,6 +334,23 @@ export default function App() {
               setScanDone(msg.done || 0);
               setScanTotal(msg.total || 0);
               setScanProgress(msg.freq ? `${(msg.freq / 1e6).toFixed(mode === 'nfm' ? 3 : 1)} MHz` : '');
+            } else if (msg.kind === 'channel') {
+              // DAB scan: a channel finished its dwell. Record it in the results
+              // so the list builds live while the sweep runs.
+              setScanDone(msg.done || 0);
+              setScanTotal(msg.total || 0);
+              setScanProgress(msg.channel || '');
+              if (Array.isArray(msg.services) && msg.services.length) {
+                setDabScanResults((prev) => [
+                  ...prev,
+                  {
+                    channel: msg.channel,
+                    freqHz: msg.freqHz,
+                    ensemble: msg.ensemble || null,
+                    services: msg.services,
+                  },
+                ]);
+              }
             } else if (msg.kind === 'hit') {
               // Tune straight to the found signal so the operator can listen
               // while the modal asks whether to save it or keep scanning.
@@ -322,10 +361,16 @@ export default function App() {
               setScanning(false);
               setScanFound(null);
               setScanDone(msg.total || 0);
+              if (Array.isArray(msg.channels)) {
+                // DAB scan: full grouped results from the server.
+                setDabScanResults(msg.channels);
+              }
               setStatus(
                 msg.aborted
                   ? 'Scan stopped'
-                  : `Scan complete — ${msg.found || 0} signal${msg.found === 1 ? '' : 's'} found`
+                  : msg.channels
+                    ? `DAB scan complete — ${msg.found || 0} station${msg.found === 1 ? '' : 's'} found`
+                    : `Scan complete — ${msg.found || 0} signal${msg.found === 1 ? '' : 's'} found`
               );
             } else if (msg.kind === 'error') {
               setScanError(msg.message || 'Scan failed');
@@ -431,12 +476,81 @@ export default function App() {
     if (!scanning && !scanFound) return;
     setScanning(false);
     setScanFound(null);
+    if (mode === 'dab') setDabScanResults([]);
     send({ op: 'scanStop' });
   };
 
   const continueScan = () => {
     setScanFound(null);
     send({ op: 'scanContinue' });
+  };
+
+  // DAB scan: sweep every Band III channel and build a live results list. The
+  // server runs the whole band (no pause-at-hit) and sends the full grouped
+  // results when it finishes. If a previous scan left results behind, ask first
+  // (a fresh scan replaces them) before wiping and re-sweeping the band.
+  const startDabScan = async () => {
+    if (mode !== 'dab' || scanning || busy) return;
+    if (dabScanResults.length > 0) {
+      setDabScanConfirm(true);
+      return;
+    }
+    await runDabScan();
+  };
+
+  const runDabScan = async () => {
+    if (mode !== 'dab' || scanning || busy) return;
+    setDabScanConfirm(false);
+    setScanning(true);
+    setDabScanResults([]);
+    setScanDone(0);
+    setScanTotal(0);
+    setScanProgress('');
+    setScanError('');
+    try {
+      let ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) ws = await openWs();
+      if (playingRef.current && playerRef.current) playerRef.current.stop();
+      playingRef.current = false;
+      setPlaying(false);
+      send({
+        op: 'scan',
+        mode: 'dab',
+        dwell: 3000,
+        host,
+        port: parseInt(port, 10),
+        gain: gain.trim() === '' ? undefined : Number(gain),
+      });
+    } catch (err) {
+      setScanError(err.message || 'Scan connection failed');
+      setScanning(false);
+    }
+  };
+
+  // Favourites for DAB: star an individual station (scanner name + channel
+  // frequency) to add/remove it, not the whole channel.
+  const isDabFavourite = (channel, serviceName) => {
+    const freq = (channel.freqHz / 1e6).toFixed(3);
+    return presets.some((p) => p.mode === 'dab' && p.service === serviceName && p.freq === freq);
+  };
+
+  const toggleDabFavourite = (channel, service) => {
+    const freq = (channel.freqHz / 1e6).toFixed(3);
+    const exists = isDabFavourite(channel, service.name);
+    const next = exists
+      ? presets.filter((p) => !(p.mode === 'dab' && p.service === service.name && p.freq === freq))
+      : sortPresets([
+          ...presets,
+          {
+            name: service.name,
+            freq,
+            mode: 'dab',
+            service: service.name,
+            sid: service.sid || undefined,
+          },
+        ]);
+    setPresets(next);
+    persistPresets('dab', next);
   };
 
   const saveScanHit = () => {
@@ -676,6 +790,16 @@ export default function App() {
     return true;
   };
 
+  // Is this scan result station the one currently being played? Mirrors
+  // isPlayingPreset so clicking a station in the results list highlights it
+  // the same way a clicked favourite does.
+  const isPlayingScanService = (channel, serviceName) => {
+    if (!playing || mode !== 'dab') return false;
+    const freq = (channel.freqHz / 1e6).toFixed(3);
+    if (!freqMatch(freq, currentFreq)) return false;
+    return currentService === serviceName;
+  };
+
   // Show the playing DAB station's logo (from the saved stations list, falling
   // back to the server-provided one) next to the station info.
   const activeLogo =
@@ -879,6 +1003,86 @@ export default function App() {
             )}
           </div>
 
+          {mode === 'dab' && (
+            <div className="scan">
+              <div className="scan-title">
+                DAB band scan
+                <span className="scan-help">5A – 13F · 174–240 MHz</span>
+              </div>
+              {scanning ? (
+                <div className="scan-progress">
+                  <div className="scan-bar">
+                    <div
+                      className="scan-fill"
+                      style={{ width: `${scanTotal ? (scanDone / scanTotal) * 100 : 0}%` }}
+                    />
+                  </div>
+                  <div className="scan-meta">
+                    <span>{scanDone}/{scanTotal}</span>
+                    <span>{scanProgress}</span>
+                    <button onClick={stopScan} disabled={!scanning}>Stop</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="scan-start">
+                  <button className="primary" onClick={startDabScan} disabled={busy}>
+                    Scan DAB band
+                  </button>
+                </div>
+              )}
+              {scanError && <div className="scan-error">{scanError}</div>}
+              {dabScanResults.length > 0 && (
+                <div className="dab-scan-results">
+                  <div className="dab-scan-results-title">
+                    {dabScanResults.reduce((a, c) => a + c.services.length, 0)} stations found
+                  </div>
+                  {dabScanResults.map((ch) => (
+                    <div className="dab-scan-channel" key={ch.channel}>
+                      <div className="dab-scan-channel-head">
+                        <span className="dab-scan-channel-name">Channel {ch.channel}</span>
+                        <span className="dab-scan-channel-freq">
+                          {(ch.freqHz / 1e6).toFixed(3)} MHz{ch.ensemble ? ` · ${ch.ensemble}` : ''}
+                        </span>
+                      </div>
+                      <div className="dab-scan-services">
+                        {ch.services.map((s) => {
+                          const fav = isDabFavourite(ch, s.name);
+                          const playingNow = isPlayingScanService(ch, s.name);
+                          return (
+                            <div
+                              className={`dab-scan-service${playingNow ? ' active' : ''}`}
+                              key={s.name}
+                            >
+                              <button
+                                className="dab-scan-service-tune"
+                                onClick={() => {
+                                  const f = (ch.freqHz / 1e6).toFixed(3);
+                                  setDabFreq(f);
+                                  setDabService(s.name);
+                                  play(f, 'dab', s.name);
+                                }}
+                              >
+                                <span className="dab-scan-service-name">{s.name}</span>
+                                {s.sid && <span className="dab-scan-service-sid">SId {s.sid}</span>}
+                              </button>
+                              <button
+                                className={`dab-scan-star${fav ? ' active' : ''}`}
+                                onClick={() => toggleDabFavourite(ch, s)}
+                                title={fav ? 'Remove from favourites' : 'Add to favourites'}
+                              >
+                                {fav ? '★' : '☆'}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {(mode === 'fm' || mode === 'nfm') && (
             <div className="scan">
               <div className="scan-title">
@@ -1047,8 +1251,14 @@ export default function App() {
 
         <div className="col col-right">
           <div className="stations">
-            <div className="stations-title">Stations</div>
-            {presets.length === 0 && <div className="stations-empty">No saved stations yet.</div>}
+            <div className="stations-title">{mode === 'dab' ? 'Favourites' : 'Stations'}</div>
+            {presets.length === 0 && (
+              <div className="stations-empty">
+                {mode === 'dab'
+                  ? 'No favourites yet — star stations from the DAB scan.'
+                  : 'No saved stations yet.'}
+              </div>
+            )}
             {presets.map((p, i) => (
               <div className={`station${isPlayingPreset(p) ? ' active' : ''}`} key={i}>
                 <button className={`station-tune${p.mode === 'dab' ? ' dab' : ''}`} onClick={() => selectPreset(p)}>
@@ -1070,20 +1280,37 @@ export default function App() {
                 </button>
               </div>
             ))}
-            <div className="row">
-              <input
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && addPreset()}
-                placeholder="Station name"
-              />
-              <button onClick={addPreset}>Save current</button>
-            </div>
+            {mode !== 'dab' && (
+              <div className="row">
+                <input
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && addPreset()}
+                  placeholder="Station name"
+                />
+                <button onClick={addPreset}>Save current</button>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
       <div className={`status ${status.startsWith('Error') ? 'error' : ''}`}>{status}</div>
+
+      {dabScanConfirm && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <div className="modal-title">Start a new DAB scan?</div>
+            <div className="scan-modal-meta">
+              This will delete the previous scan results and scan the DAB band again.
+            </div>
+            <div className="modal-actions">
+              <button className="primary" onClick={runDabScan}>Scan again</button>
+              <button onClick={() => setDabScanConfirm(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {scanFound && (
         <div className="modal-overlay">
