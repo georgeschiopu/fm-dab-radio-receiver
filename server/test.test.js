@@ -610,6 +610,26 @@ describe('DAB PCM conversion', () => {
   });
 });
 
+describe('DAB service list parsing', () => {
+  it('collects every programme service from SId lines, not just the playing one', () => {
+    const rec = new DabReceiver();
+    // dablin prints the full ensemble as "SId 0xNNNN: programme service label
+    // '...'" and only the currently selected station as "service label '...'".
+    rec._handleDablinLine("ensemble label 'BBC National'");
+    rec._handleDablinLine("SId 0xC221: programme service label 'BBC Radio 1'");
+    rec._handleDablinLine("SId 0xC222: programme service label 'BBC Radio 2'");
+    rec._handleDablinLine("SId 0xC423: programme service label 'BBC Radio 3'");
+    rec._handleDablinLine("service label 'BBC Radio 1'");
+
+    const snap = rec.servicesSnapshot();
+    expect(snap.length).toBe(3);
+    expect(snap.map((s) => s.name)).toEqual(['BBC Radio 1', 'BBC Radio 2', 'BBC Radio 3']);
+    expect(snap.find((s) => s.name === 'BBC Radio 2').sid).toBe('C222');
+    expect(rec.ensemble).toBe('BBC National');
+    console.log(`OK: ${snap.length} services from SId lines, e.g. ${snap[1].name} (SId ${snap[1].sid})`);
+  });
+});
+
 describe('DAB channel map', () => {
   it('maps band-III frequencies to channel names and back', () => {
     const cases = [
@@ -909,5 +929,201 @@ describe('NFM interactive scanner', () => {
     expect(r.found).toBe(1);
     expect(mgr.scanning).toBe(false);
     expect(mgr.scan).toBe(null);
+  });
+});
+
+describe('DAB scanner', () => {
+  // Runs the async DAB sweep to completion with a fake dab receiver and a near-
+  // zero sleep so the whole band is swept in a few ticks.
+  async function runDabScan({ channelsWithServices = new Map() } = {}) {
+    const mgr = new AudioStreamManager();
+    mgr.mode = 'dab';
+    mgr.connected = true;
+    mgr.host = '192.168.0.6';
+    mgr.port = 1234;
+    mgr.gain = 40;
+    mgr.dab = {
+      start: vi.fn(({ freqHz }) => {
+        mgr.dab._freq = freqHz;
+      }),
+      stop: vi.fn(),
+      servicesSnapshot: vi.fn(() => {
+        const ch = mgr.dab._freq / 1000;
+        return channelsWithServices.get(ch) || [];
+      }),
+      running: true,
+      channel: null,
+      ensemble: null,
+    };
+    const events = [];
+    mgr.on('scan', (e) => events.push(e));
+    const origSleep = mgr._sleep;
+    mgr._sleep = () => Promise.resolve();
+    const res = mgr.startDabScan({ dwellMs: 500 });
+    try {
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('DAB scan timed out')), 5000);
+        mgr.on('scan', (e) => {
+          if (e.kind === 'done') {
+            clearTimeout(t);
+            resolve();
+          }
+        });
+      });
+    } finally {
+      mgr._sleep = origSleep;
+    }
+    return { mgr, events, res };
+  }
+
+  it('sweeps every Band III channel and reports services grouped by channel', async () => {
+    // Services only appear on 11A (216928 kHz) and 12A (223936 kHz).
+    const chs = new Map([
+      [216928, [{ name: 'BBC Radio 1', sid: 'C221' }, { name: 'BBC Radio 2', sid: 'C222' }]],
+      [223936, [{ name: 'Classic FM', sid: 'C321' }]],
+    ]);
+    const { events, res } = await runDabScan({ channelsWithServices: chs });
+
+    expect(res.total).toBe(38);
+    const started = events.find((e) => e.kind === 'started');
+    expect(started.total).toBe(38);
+
+    const channelEvts = events.filter((e) => e.kind === 'channel');
+    expect(channelEvts.length).toBe(38);
+
+    const done = events.find((e) => e.kind === 'done');
+    expect(done).toBeTruthy();
+    expect(done.aborted).toBe(false);
+    expect(done.found).toBe(3);
+    expect(done.channels.length).toBe(2);
+    const c11 = done.channels.find((c) => c.channel === '11A');
+    expect(c11).toBeTruthy();
+    expect(c11.services[0].name).toBe('BBC Radio 1');
+    expect(c11.services[0].sid).toBe('C221');
+    const c12 = done.channels.find((c) => c.channel === '12A');
+    expect(c12.services[0].sid).toBe('C321');
+  });
+
+  it('aborts cleanly via stopScan while sweeping', async () => {
+    const mgr = new AudioStreamManager();
+    mgr.mode = 'dab';
+    mgr.connected = true;
+    mgr.host = 'h';
+    mgr.port = 1;
+    mgr.gain = 40;
+    mgr.dab = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      servicesSnapshot: vi.fn(() => []),
+      running: true,
+      channel: null,
+      ensemble: null,
+    };
+    mgr._sleep = () => Promise.resolve();
+    mgr.startDabScan({ dwellMs: 500 });
+    const r = mgr.stopScan();
+    expect(r).toBeTruthy();
+    expect(mgr.scanning).toBe(false);
+    expect(mgr.scan).toBe(null);
+    expect(mgr.dab.stop).toHaveBeenCalled();
+    // The async loop sees the abort and stops emitting.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mgr.scanning).toBe(false);
+  });
+
+  it('keeps sweeping past a channel whose dab.start() throws', async () => {
+    const mgr = new AudioStreamManager();
+    mgr.mode = 'dab';
+    mgr.connected = true;
+    mgr.host = 'h';
+    mgr.port = 1;
+    mgr.gain = 40;
+    let calls = 0;
+    mgr.dab = {
+      // 5C (the third channel) fails to spawn; every other channel decodes a service.
+      start: vi.fn(({ freqHz }) => {
+        calls++;
+        if (calls === 3) throw new Error('spawn ENOENT');
+        mgr.dab._freq = freqHz;
+      }),
+      stop: vi.fn(),
+      servicesSnapshot: vi.fn(() => {
+        const ch = mgr.dab._freq / 1000;
+        return [{ name: `Stn@${ch}`, sid: 'C100' }];
+      }),
+      running: true,
+      channel: null,
+      ensemble: null,
+    };
+    const events = [];
+    mgr.on('scan', (e) => events.push(e));
+    mgr._sleep = () => Promise.resolve();
+    mgr.startDabScan({ dwellMs: 500 });
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('DAB scan timed out')), 5000);
+      mgr.on('scan', (e) => {
+        if (e.kind === 'done') {
+          clearTimeout(t);
+          resolve();
+        }
+      });
+    });
+
+    // The failed channel must not stop the sweep: all 38 channels are visited.
+    expect(events.filter((e) => e.kind === 'channel').length).toBe(38);
+    const done = events.find((e) => e.kind === 'done');
+    expect(done).toBeTruthy();
+    expect(done.aborted).toBe(false);
+    // 38 channels minus the one that failed to start.
+    expect(done.channels.length).toBe(37);
+    expect(mgr.scanning).toBe(false);
+    expect(mgr.scan).toBe(null);
+  });
+
+  it('keeps polling a slow-locking channel until its service list stabilises', async () => {
+    const mgr = new AudioStreamManager();
+    mgr.mode = 'dab';
+    mgr.connected = true;
+    mgr.host = 'h';
+    mgr.port = 1;
+    mgr.gain = 40;
+    // Services on 8B (197648 kHz) appear one per snapshot, simulating a weak
+    // ensemble whose FIC takes a while to decode fully. Other channels are empty.
+    mgr.dab = {
+      start: vi.fn(({ freqHz }) => {
+        mgr.dab._freq = freqHz;
+        mgr.dab._polls = 0; // per-channel snapshot counter
+      }),
+      stop: vi.fn(),
+      servicesSnapshot: vi.fn(() => {
+        mgr.dab._polls++;
+        const ch = mgr.dab._freq / 1000;
+        if (ch !== 197648) return [];
+        const n = Math.min(3, mgr.dab._polls);
+        return Array.from({ length: n }, (_, i) => ({ name: `Stn${i + 1}`, sid: `C${100 + i}` }));
+      }),
+      running: true,
+      channel: null,
+      ensemble: null,
+    };
+    mgr._sleep = () => Promise.resolve();
+    let done = null;
+    mgr.on('scan', (e) => {
+      if (e.kind === 'done') done = e;
+    });
+    mgr.startDabScan({ dwellMs: 900 });
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('DAB scan timed out')), 5000);
+      mgr.on('scan', (e) => {
+        if (e.kind === 'done') {
+          clearTimeout(t);
+          resolve();
+        }
+      });
+    });
+
+    const ch8b = done.channels.find((c) => c.channel === '8B');
+    expect(ch8b).toBeTruthy();
+    expect(ch8b.services.length).toBe(3);
   });
 });

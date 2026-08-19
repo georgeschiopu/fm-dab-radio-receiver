@@ -51,6 +51,7 @@ function authenticatedFetch() {
 beforeEach(() => {
   MockWebSocket.instances = [];
   vi.stubGlobal('WebSocket', MockWebSocket);
+  localStorage.clear();
 });
 
 afterEach(() => {
@@ -141,5 +142,177 @@ describe('App', () => {
     await user.clear(freqInput);
     await user.type(freqInput, '99.9');
     expect(freqInput.value).toBe('99.9');
+  });
+
+  it('stars an individual DAB scan station into favourites and unstars it', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', authenticatedFetch());
+    render(<App />);
+    await screen.findByText('Stations');
+
+    await user.click(screen.getByRole('button', { name: 'DAB' }));
+    await screen.findByText('DAB band scan');
+
+    await user.click(screen.getByRole('button', { name: 'Scan DAB band' }));
+
+    const ws = MockWebSocket.instances[0];
+    await waitFor(() => expect(ws.readyState).toBe(MockWebSocket.OPEN));
+
+    // Live per-channel event
+    ws.emit({
+      type: 'scan',
+      kind: 'channel',
+      channel: '11A',
+      freqHz: 216928000,
+      services: [{ name: 'BBC Radio 1', sid: 'C221' }, { name: 'BBC Radio 2', sid: 'C222' }],
+      done: 1,
+      total: 38,
+    });
+    await screen.findByText('BBC Radio 1');
+
+    // Scan finished with the full grouped results
+    ws.emit({
+      type: 'scan',
+      kind: 'done',
+      aborted: false,
+      found: 2,
+      total: 38,
+      channels: [
+        { channel: '11A', freqHz: 216928000, services: [{ name: 'BBC Radio 1', sid: 'C221' }, { name: 'BBC Radio 2', sid: 'C222' }] },
+      ],
+    });
+    await screen.findByText('2 stations found');
+
+    // Star only BBC Radio 1 (individual station, not the whole channel)
+    await user.click(screen.getAllByTitle('Add to favourites')[0]);
+    await waitFor(() => {
+      const stations = document.querySelector('.col-right .stations');
+      expect(stations.textContent).toContain('BBC Radio 1');
+      expect(stations.textContent).not.toContain('BBC Radio 2');
+    });
+
+    // Starring again removes it from favourites
+    await user.click(screen.getByTitle('Remove from favourites'));
+    await waitFor(() => {
+      const stations = document.querySelector('.col-right .stations');
+      expect(stations.textContent).not.toContain('BBC Radio 1');
+    });
+  });
+
+  it('keeps previous DAB scan results and asks before a new scan wipes them', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', authenticatedFetch());
+    render(<App />);
+    await screen.findByText('Stations');
+
+    await user.click(screen.getByRole('button', { name: 'DAB' }));
+    await screen.findByText('DAB band scan');
+
+    // First scan completes with results
+    await user.click(screen.getByRole('button', { name: 'Scan DAB band' }));
+    const ws = MockWebSocket.instances[0];
+    await waitFor(() => expect(ws.readyState).toBe(MockWebSocket.OPEN));
+    ws.emit({
+      type: 'scan',
+      kind: 'done',
+      aborted: false,
+      found: 1,
+      total: 38,
+      channels: [
+        { channel: '11A', freqHz: 216928000, services: [{ name: 'BBC Radio 1', sid: 'C221' }] },
+      ],
+    });
+    await screen.findByText('1 stations found');
+
+    // New scan must confirm before wiping the previous results
+    await user.click(screen.getByRole('button', { name: 'Scan DAB band' }));
+    await screen.findByText('Start a new DAB scan?');
+    expect(screen.getByText('1 stations found')).toBeInTheDocument();
+
+    // Cancel keeps the old results and sends no scan
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByText('1 stations found')).toBeInTheDocument();
+    expect(ws.sent.filter((m) => m.op === 'scan' && m.mode === 'dab').length).toBe(1);
+
+    // Confirming clears the results and starts a fresh sweep
+    await user.click(screen.getByRole('button', { name: 'Scan DAB band' }));
+    await user.click(screen.getByRole('button', { name: 'Scan again' }));
+    await waitFor(() => expect(ws.sent.filter((m) => m.op === 'scan' && m.mode === 'dab').length).toBe(2));
+    await waitFor(() => expect(screen.queryByText('1 stations found')).not.toBeInTheDocument());
+  });
+
+  it('highlights a clicked DAB scan station like a favourite and keeps its star', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', authenticatedFetch());
+    render(<App />);
+    await screen.findByText('Stations');
+
+    await user.click(screen.getByRole('button', { name: 'DAB' }));
+    await screen.findByText('DAB band scan');
+
+    await user.click(screen.getByRole('button', { name: 'Scan DAB band' }));
+    const ws = MockWebSocket.instances[0];
+    await waitFor(() => expect(ws.readyState).toBe(MockWebSocket.OPEN));
+    ws.emit({
+      type: 'scan',
+      kind: 'done',
+      aborted: false,
+      found: 2,
+      total: 38,
+      channels: [
+        { channel: '11A', freqHz: 216928000, services: [{ name: 'BBC Radio 1', sid: 'C221' }, { name: 'BBC Radio 2', sid: 'C222' }] },
+      ],
+    });
+    await screen.findByText('2 stations found');
+
+    // Star BBC Radio 1, its star lights up
+    await user.click(screen.getAllByTitle('Add to favourites')[0]);
+    await waitFor(() => {
+      const star = screen.getAllByTitle('Remove from favourites')[0];
+      expect(star.classList.contains('active')).toBe(true);
+    });
+
+    // Clicking a result station tunes it and highlights it like a favourite
+    await user.click(screen.getByRole('button', { name: /BBC Radio 2/ }));
+    await waitFor(() => {
+      const rows = document.querySelectorAll('.dab-scan-service');
+      const activeRow = [...rows].find((r) => r.classList.contains('active'));
+      expect(activeRow).toBeTruthy();
+      expect(activeRow.textContent).toContain('BBC Radio 2');
+    });
+  });
+
+  it('restores the last DAB scan results after a page refresh', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', authenticatedFetch());
+
+    // First session: run a scan that completes with results, which get saved.
+    const first = render(<App />);
+    await screen.findByText('Stations');
+    await user.click(screen.getByRole('button', { name: 'DAB' }));
+    await screen.findByText('DAB band scan');
+    await user.click(screen.getByRole('button', { name: 'Scan DAB band' }));
+    const ws = MockWebSocket.instances[0];
+    await waitFor(() => expect(ws.readyState).toBe(MockWebSocket.OPEN));
+    ws.emit({
+      type: 'scan',
+      kind: 'done',
+      aborted: false,
+      found: 1,
+      total: 38,
+      channels: [
+        { channel: '8B', freqHz: 197648000, services: [{ name: 'BBC Radio 3', sid: 'C423' }] },
+      ],
+    });
+    await screen.findByText('1 stations found');
+    await waitFor(() => expect(localStorage.getItem('sdr-alice-dab-scan')).toBeTruthy());
+    first.unmount();
+
+    // "Refresh": re-mount with the same user; the saved results come back.
+    render(<App />);
+    await screen.findByText('Stations');
+    await user.click(screen.getByRole('button', { name: 'DAB' }));
+    await screen.findByText('1 stations found');
+    expect(screen.getByText('BBC Radio 3')).toBeInTheDocument();
   });
 });

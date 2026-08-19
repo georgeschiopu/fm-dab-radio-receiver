@@ -29,6 +29,7 @@ function cleanPreset(p, mode) {
     freq: String(p.freq ?? ''),
     mode,
     service: p.service ? String(p.service).slice(0, 80) : undefined,
+    sid: p.sid ? String(p.sid).slice(0, 8) : undefined,
   };
 }
 

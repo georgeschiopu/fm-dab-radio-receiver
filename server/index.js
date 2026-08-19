@@ -254,12 +254,32 @@ wss.on('connection', (ws, req) => {
       const level = msg.level !== undefined ? Number(msg.level) : 0;
       if (Number.isFinite(level)) manager.setSquelch(level);
     } else if (msg.op === 'scan') {
-      const mode = msg.mode === 'nfm' ? 'nfm' : 'fm';
-      const start = Math.round(Number(msg.start));
-      const stop = Math.round(Number(msg.stop));
+      const mode = msg.mode === 'nfm' ? 'nfm' : msg.mode === 'dab' ? 'dab' : 'fm';
       const host = msg.host || DEFAULT_HOST;
       const port = Number(msg.port || DEFAULT_PORT);
       const gain = msg.gain !== undefined && msg.gain !== '' ? Number(msg.gain) : DEFAULT_GAIN;
+      if (mode === 'dab') {
+        try {
+          if (
+            !manager.running ||
+            manager.host !== host ||
+            manager.port !== port ||
+            manager.mode !== mode ||
+            !manager.connected
+          ) {
+            await manager.start({ mode, host, port, freq: DAB_DEFAULT_FREQ, gain });
+          } else {
+            manager.setGain(gain);
+          }
+          const result = manager.startDabScan({ dwellMs: msg.dwell });
+          if (!result) ws.send(JSON.stringify({ type: 'scan', kind: 'error', message: 'Scan requires DAB mode and a connected rtl_tcp' }));
+        } catch (err) {
+          ws.send(JSON.stringify({ type: 'scan', kind: 'error', message: `rtl_tcp: ${err.message}` }));
+        }
+        return;
+      }
+      const start = Math.round(Number(msg.start));
+      const stop = Math.round(Number(msg.stop));
       if (!Number.isFinite(start) || !Number.isFinite(stop) || start <= 0 || stop <= start) return;
       try {
         if (

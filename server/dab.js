@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 
 // ETSI EN 300 401 Band III DAB ensemble block centres (kHz).
 // Matches the table used by eti-cmdline (band-handler.cpp).
-const BAND_III = [
+export const BAND_III = [
   ['5A', 174928], ['5B', 176640], ['5C', 178352], ['5D', 180064],
   ['6A', 181936], ['6B', 183648], ['6C', 185360], ['6D', 187072],
   ['7A', 188928], ['7B', 190640], ['7C', 192352], ['7D', 194064],
@@ -99,6 +99,7 @@ export class DabReceiver {
     if (channelKey !== this._channelKey) {
       this._channelKey = channelKey;
       this.services = [];
+      this.sids = {};
     }
 
     // eti-cmdline-rtl_tcp: IQ over rtl_tcp -> ETI-NI frames on stdout.
@@ -131,22 +132,7 @@ export class DabReceiver {
     dablin.stderr.on('data', (d) => {
       if (this.dablin !== dablin) return;
       for (const line of String(d).split('\n')) {
-        const clean = stripAnsi(line);
-        // dablin's console PCM output is always 16-bit signed LE (FAAD2 with
-        // FAAD_FMT_16BIT for DAB+, mpg123 with MPG123_ENC_SIGNED_16 for DAB).
-        const fm = clean.match(/PCMOutput: format set; samplerate: (\d+), channels: (\d+)/);
-        if (fm) this._setFormat(Number(fm[1]), Number(fm[2]), false);
-        const sl = clean.match(/service label '([^']+)'/);
-        if (sl) this._addService(sl[1]);
-        const sid = clean.match(/SId 0x([0-9A-Fa-f]{4}): programme service label '([^']+)'/);
-        if (sid) {
-          this.sids[sid[2]] = sid[1].toUpperCase();
-          if (sid[2] === this.service) this.sid = sid[1].toUpperCase();
-        }
-        const el = clean.match(/ensemble label '([^']+)'/);
-        if (el) this.ensemble = el[1];
-        const sh = clean.match(/slideshow saved to (.+) \((\d+) bytes\)/);
-        if (sh) console.log(`[dab] slideshow saved: ${sh[1]} (${sh[2]} bytes)`);
+        this._handleDablinLine(stripAnsi(line));
       }
     });
     dablin.on('error', (err) => {
@@ -161,10 +147,47 @@ export class DabReceiver {
     });
   }
 
+  // Parses one cleaned dablin stderr line, updating the decoded service list,
+  // SIds, ensemble and PCM format. Kept as a method so the DAB scanner can be
+  // tested against synthetic dablin output.
+  _handleDablinLine(clean) {
+    if (!clean) return;
+    // dablin's console PCM output is always 16-bit signed LE (FAAD2 with
+    // FAAD_FMT_16BIT for DAB+, mpg123 with MPG123_ENC_SIGNED_16 for DAB).
+    const fm = clean.match(/PCMOutput: format set; samplerate: (\d+), channels: (\d+)/);
+    if (fm) this._setFormat(Number(fm[1]), Number(fm[2]), false);
+    const sl = clean.match(/service label '([^']+)'/);
+    if (sl) this._addService(sl[1]);
+    const sid = clean.match(/SId 0x([0-9A-Fa-f]{4}): programme service label '([^']+)'/);
+    if (sid) {
+      this.sids[sid[2]] = sid[1].toUpperCase();
+      // dablin lists every station in the ensemble as
+      // "SId 0xNNNN: programme service label '...'" and only the currently
+      // selected one as "service label '...'", so the SId lines carry the
+      // full station list: add them to services too, not just to sids.
+      this._addService(sid[2]);
+      if (sid[2] === this.service) this.sid = sid[1].toUpperCase();
+    }
+    const el = clean.match(/ensemble label '([^']+)'/);
+    if (el) this.ensemble = el[1];
+    const sh = clean.match(/slideshow saved to (.+) \((\d+) bytes\)/);
+    if (sh) console.log(`[dab] slideshow saved: ${sh[1]} (${sh[2]} bytes)`);
+  }
+
   _addService(label) {
     if (this.services.includes(label)) return;
     this.services.push(label);
     if (!this.service) this.service = label;
+  }
+
+  // Snapshot the services decoded so far on the current channel, each with its
+  // SId (hex, upper-case) and ensemble name. Used by the DAB scanner to report
+  // what was found on a channel after its dwell window.
+  servicesSnapshot() {
+    return this.services.map((label) => ({
+      name: label,
+      sid: this.sids[label] || null,
+    }));
   }
 
   _resetFormat() {

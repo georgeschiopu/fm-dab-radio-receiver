@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { RtlTcpClient, DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
 import { FmDecoder, AmDecoder, ChannelPowerMeter } from './dsp.js';
 import { SpectrumAnalyzer } from './spectrum.js';
-import { DabReceiver } from './dab.js';
+import { DabReceiver, BAND_III } from './dab.js';
 
 const NFM_SAMPLE_RATE = 1_000_000; // ±0.5 MHz visible span
 const NFM_AUDIO_RATE = 50_000; // integer decimation of 1 MHz; resampled to 48k server-side
@@ -81,6 +81,7 @@ export class AudioStreamManager extends EventEmitter {
       const dab = this.dab;
       dab.start({ host, port, freqHz: freq, gain: gain ?? 40, service });
       dab.onPcm = (pcm) => {
+        if (this.scanning) return; // a DAB scan is sweeping channels, no audio
         this.stats.audio = this._rms(pcm);
         this.connected = true;
         if (this.onPcm) this.onPcm(pcm);
@@ -282,6 +283,14 @@ export class AudioStreamManager extends EventEmitter {
   stopScan() {
     if (!this.scanning || !this.scan) return null;
     const s = this.scan;
+    if (s.kind === 'dab') {
+      // DAB scan: abort the async sweep loop and stop the dab child processes.
+      s.aborted = true;
+      this.scanning = false;
+      this.scan = null;
+      this.dab.stop();
+      return { total: s.channels.length, found: s.results.length };
+    }
     this.scanning = false;
     this.scan = null;
     return { total: s.freqs.length, found: s.found };
@@ -423,6 +432,129 @@ export class AudioStreamManager extends EventEmitter {
     this.scanning = false;
     this.scan = null;
     this.emit('scan', done);
+  }
+
+  // Interactive DAB scan. Sweeps every Band III channel (5A..13F), dwelling
+  // ~dwellMs on each so eti-cmdline can lock and dablin can decode the FIC,
+  // and collects the service labels + SIds decoded on each channel. Emits
+  // 'scan' events:
+  //   {kind:'started', total:38}                          scan begins
+  //   {kind:'progress', channel, done, total}             dwelling on a channel
+  //   {kind:'channel', channel, freqHz, ensemble, services:[{name,sid}], done, total}
+  //                                                        a channel finished its dwell
+  //   {kind:'done', aborted, total, channels:[{channel, freqHz, ensemble, services}]}
+  //                                                        full results (non-empty channels)
+  // Unlike the FM/NFM power scan there is no pause-at-hit: the sweep runs the
+  // whole band and presents everything at the end. Returns null if not in DAB
+  // mode or already scanning.
+  startDabScan({ dwellMs = 3000 } = {}) {
+    if (this.mode !== 'dab' || this.scanning || !this.dab) return null;
+    const channels = BAND_III.map(([name, khz]) => ({ channel: name, freqHz: khz * 1000 }));
+    this.scanning = true;
+    this.scan = {
+      kind: 'dab',
+      channels,
+      idx: 0,
+      results: [],
+      dwellMs: Math.max(500, Math.round(Number(dwellMs) || 3000)),
+      aborted: false,
+    };
+    this.emit('scan', { kind: 'started', total: channels.length });
+    this._runDabScan();
+    return { total: channels.length };
+  }
+
+  // Runs the DAB sweep asynchronously: tune each channel, let it dwell, snapshot
+  // the decoded services, then move on. Checks this.scan on every step so a
+  // stopScan()/tune()/stop() cancels the loop. Each channel is isolated in a
+  // try/catch so a single failed channel (e.g. a spawn error or a dropped
+  // rtl_tcp connection) can never abort the whole sweep: the scan always runs
+  // to the end of the band and emits a 'done' event.
+  async _runDabScan() {
+    const s = this.scan;
+    if (!s || s.kind !== 'dab') return;
+    const host = this.host;
+    const port = this.port;
+    const gain = this.gain ?? 40;
+    while (s && !s.aborted && s.idx < s.channels.length) {
+      const ch = s.channels[s.idx];
+      this.emit('scan', { kind: 'progress', channel: ch.channel, done: s.idx, total: s.channels.length });
+      let services = [];
+      try {
+        this.dab.start({ host, port, freqHz: ch.freqHz, gain, service: null });
+        await this._sleep(s.dwellMs);
+        if (!this.scan || this.scan.aborted) return;
+        services = this.dab.servicesSnapshot();
+        // A signal is present when services have decoded or eti-cmdline reports
+        // an SNR. dablin prints services incrementally as FIC frames arrive, so
+        // keep polling the decoder until the list stops growing (or the extra
+        // window is spent) — this catches slow-locking ensembles (e.g. a weak
+        // 8B) that would otherwise be skipped after one fixed dwell.
+        if (services.length || this.dab.snr != null) {
+          // Poll until the list stops growing (or the extra window is spent) —
+          // this catches slow-locking ensembles (e.g. a weak 8B) that would
+          // otherwise be skipped after one fixed dwell. A signal with no
+          // services yet waits out the window; a growing list keeps polling.
+          const extraPolls = 3;
+          let prevCount = services.length;
+          for (let i = 0; i < extraPolls; i++) {
+            await this._sleep(Math.max(500, Math.round(s.dwellMs / 3)));
+            if (!this.scan || this.scan.aborted) return;
+            services = this.dab.servicesSnapshot();
+            if (services.length > prevCount) {
+              prevCount = services.length; // still growing, keep polling
+            } else if (services.length > 0) {
+              break; // stable list already decoded
+            }
+            // zero services: keep waiting out the window for a slow lock
+          }
+        }
+        if (services.length) {
+          s.results.push({
+            channel: ch.channel,
+            freqHz: ch.freqHz,
+            ensemble: this.dab.ensemble,
+            services,
+          });
+        }
+      } catch (err) {
+        console.error(`[dab scan] channel ${ch.channel} failed: ${err.message}`);
+      }
+      try {
+        this.emit('scan', {
+          kind: 'channel',
+          channel: ch.channel,
+          freqHz: ch.freqHz,
+          ensemble: this.dab.ensemble,
+          services,
+          done: s.idx + 1,
+          total: s.channels.length,
+        });
+      } catch (err) {
+        console.error(`[dab scan] channel ${ch.channel} broadcast failed: ${err.message}`);
+      }
+      s.idx++;
+    }
+    const cur = this.scan;
+    if (!cur || cur.kind !== 'dab') return;
+    const done = {
+      kind: 'done',
+      aborted: cur.aborted,
+      found: cur.results.reduce((a, c) => a + c.services.length, 0),
+      total: cur.channels.length,
+      channels: cur.results,
+    };
+    this.scanning = false;
+    this.scan = null;
+    try {
+      this.emit('scan', done);
+    } catch (err) {
+      console.error(`[dab scan] done broadcast failed: ${err.message}`);
+    }
+  }
+
+  _sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   _rms(pcm) {
