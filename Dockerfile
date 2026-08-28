@@ -31,6 +31,11 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
+# lorarx is the LoRa PHY demodulator used by OpenWebRX+ for Meshtastic.
+# Keep the application runtime small by copying only this binary from the
+# pinned reference image rather than using the full SoftMbe image as a base.
+FROM slechev/openwebrxplus-softmbe@sha256:1be25eaa6ac9bdfb50762dee6ddb20c7639d40ca66bfbedb6915b3689ad266b0 AS meshtastic-build
+
 # ---- stage 3: runtime ----
 FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production
@@ -44,6 +49,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=dab-build /src/eti-stuff/eti-cmdline/build/eti-cmdline-rtl_tcp /usr/local/bin/eti-cmdline-rtl_tcp
 COPY --from=dab-build /usr/local/bin/dablin /usr/local/bin/dablin
+COPY --from=meshtastic-build /usr/bin/lorarx /usr/local/bin/lorarx
 COPY --from=build /app/server ./server
 COPY --from=build /app/client/dist ./client/dist
 RUN useradd -r -s /usr/sbin/nologin sdr && mkdir -p /data && chown -R sdr:sdr /data && chown -R sdr /app

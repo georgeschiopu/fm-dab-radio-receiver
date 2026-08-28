@@ -3,6 +3,8 @@ import { RtlTcpClient, DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
 import { FmDecoder, AmDecoder, ChannelPowerMeter } from './dsp.js';
 import { SpectrumAnalyzer } from './spectrum.js';
 import { DabReceiver, BAND_III } from './dab.js';
+import { MeshtasticReceiver } from './meshtasticReceiver.js';
+import { MESHTASTIC_DEFAULT_FREQ, MESHTASTIC_IF_OFFSET, MESHTASTIC_SAMPLE_RATE } from './meshtastic.js';
 
 const NFM_SAMPLE_RATE = 1_000_000; // ±0.5 MHz visible span
 const NFM_AUDIO_RATE = 50_000; // integer decimation of 1 MHz; resampled to 48k server-side
@@ -47,6 +49,7 @@ export class AudioStreamManager extends EventEmitter {
     super();
     this.rtl = null;
     this.dab = new DabReceiver();
+    this.meshtastic = new MeshtasticReceiver();
     this.mode = 'fm';
     this.decoder = new FmDecoder();
     this.spec = new SpectrumAnalyzer();
@@ -65,15 +68,25 @@ export class AudioStreamManager extends EventEmitter {
     this.onPcm = null;
     this.scanning = false;
     this.scan = null;
+    this.onPacket = null;
+    this.meshtasticKey = 'default';
+    this.meshtasticPackets = 0;
+    this.meshtastic.on('packet', (packet) => {
+      this.meshtasticPackets++;
+      if (this.onPacket) this.onPacket(packet);
+    });
+    this.meshtastic.on('error', (err) => this.emit('error', err));
   }
 
-  async start({ mode = 'fm', host, port, freq, gain = null, service = null }) {
+  async start({ mode = 'fm', host, port, freq, gain = null, service = null, meshtasticKey = 'default' }) {
     if (this.running) this.stop();
     this.mode = mode;
     this.host = host;
     this.port = port;
     this.freq = freq;
     this.gain = gain;
+    this.meshtasticKey = meshtasticKey || 'default';
+    this.meshtasticPackets = 0;
     this.stats = { signal: 0, audio: 0 };
     this.running = true;
 
@@ -97,6 +110,13 @@ export class AudioStreamManager extends EventEmitter {
       this.connected = dab.running;
       this.emit('status', this.status());
       return;
+    }
+
+    // Meshtastic uses the same raw 1 Msps stream as the waterfall, but hands it
+    // to lorarx instead of producing browser audio.
+    if (mode === 'meshtastic') {
+      this.decoder = null;
+      this.meshtastic.start({ frequency: freq || MESHTASTIC_DEFAULT_FREQ, key: this.meshtasticKey });
     }
 
     // FM / NFM / AM mode: direct rtl_tcp IQ handled in-process
@@ -125,24 +145,24 @@ export class AudioStreamManager extends EventEmitter {
         agc: true,
         channelCutoff: AM_IF_CUTOFF,
       });
-    } else {
+    } else if (mode !== 'meshtastic') {
       this.decoder = new FmDecoder();
     }
-    this.decoder.reset();
+    if (this.decoder) this.decoder.reset();
     // NFM/AM capture the whole 1 Msps band; a full-rate FFT on every 2048-sample
     // block (~488/s) is far more waterfall than the 20 lines/s display needs and
     // steals CPU from the audio path while the user rides the tuning knob. Stride
     // the FFT so the waterfall stays smooth but costs a fraction of the CPU.
     const nfmAm = mode === 'nfm' || mode === 'am';
     this.spec = new SpectrumAnalyzer({
-      sampleRate: nfmAm ? AM_SAMPLE_RATE : DEFAULT_SAMPLE_RATE,
-      fftEvery: nfmAm ? 4 : 1,
+      sampleRate: mode === 'meshtastic' ? MESHTASTIC_SAMPLE_RATE : nfmAm ? AM_SAMPLE_RATE : DEFAULT_SAMPLE_RATE,
+      fftEvery: nfmAm || mode === 'meshtastic' ? 4 : 1,
     });
     this.spec.onSpectrum = (line) => {
       if (this.onSpectrum) this.onSpectrum(line);
     };
     this.spec.reset();
-    const rtl = new RtlTcpClient({ host, port, sampleRate: mode === 'nfm' || mode === 'am' ? AM_SAMPLE_RATE : DEFAULT_SAMPLE_RATE });
+    const rtl = new RtlTcpClient({ host, port, sampleRate: mode === 'nfm' || mode === 'am' || mode === 'meshtastic' ? AM_SAMPLE_RATE : DEFAULT_SAMPLE_RATE });
     this.rtl = rtl;
     rtl.on('iq', (chunk) => this._onIq(chunk));
     rtl.on('disconnect', () => {
@@ -158,7 +178,8 @@ export class AudioStreamManager extends EventEmitter {
     rtl.on('error', (err) => this.emit('error', err));
 
     try {
-      await rtl.connect({ freq, gain });
+      const tunerFreq = mode === 'meshtastic' ? freq - MESHTASTIC_IF_OFFSET : freq;
+      await rtl.connect({ freq: tunerFreq, gain });
     } catch (err) {
       this.running = false;
       this.connected = false;
@@ -166,7 +187,7 @@ export class AudioStreamManager extends EventEmitter {
       throw err;
     }
     this.connected = true;
-    this.captureCenter = freq;
+    this.captureCenter = mode === 'meshtastic' ? freq - MESHTASTIC_IF_OFFSET : freq;
     if (this.decoder && this.decoder.setChannelOffset) this.decoder.setChannelOffset(0);
     this.emit('status', this.status());
   }
@@ -192,6 +213,11 @@ export class AudioStreamManager extends EventEmitter {
       s.accum.sum += power * n;
       s.accum.count += n;
       if (s.accum.count >= s.dwellSamples) this._closeDwell();
+      return;
+    }
+    if (this.mode === 'meshtastic') {
+      this.meshtastic.push(chunk);
+      this.spec.push(chunk);
       return;
     }
     const pcm = this.decoder.process(chunk);
@@ -586,6 +612,12 @@ export class AudioStreamManager extends EventEmitter {
     this.emit('status', this.status());
   }
 
+  setMeshtasticKey(key) {
+    this.meshtasticKey = key || 'default';
+    this.meshtastic.setKey(this.meshtasticKey);
+    this.emit('status', this.status());
+  }
+
   tune(freq, service = null) {
     if (this.scanning && this.scan && !this.scan.paused) {
       this.scanning = false;
@@ -600,6 +632,12 @@ export class AudioStreamManager extends EventEmitter {
         this.connected = this.dab.running;
       }
     } else if (this.rtl && this.connected) {
+      if (this.mode === 'meshtastic') {
+        this.meshtastic.setFrequency(freq);
+        this.rtl.tune(freq - MESHTASTIC_IF_OFFSET);
+        this.emit('status', this.status());
+        return;
+      }
       const rate = this.decoder ? this.decoder.inRate : DEFAULT_SAMPLE_RATE;
       const maxOff = Math.floor(rate / 2 * 0.8);
       const off = this.captureCenter != null ? freq - this.captureCenter : 0;
@@ -628,6 +666,7 @@ export class AudioStreamManager extends EventEmitter {
       this.rtl.close();
       this.rtl = null;
     }
+    this.meshtastic.stop();
     this.dab.stop();
     this.emit('status', this.status());
   }
@@ -651,6 +690,7 @@ export class AudioStreamManager extends EventEmitter {
       span: this.mode === 'dab' ? null : this.spec ? this.spec.sampleRate : null,
       center: this.mode === 'dab' ? null : this.captureCenter,
       squelch: this.mode === 'nfm' ? this.squelch : 0,
+      meshtasticPackets: this.mode === 'meshtastic' ? this.meshtasticPackets : 0,
       scanning: this.scanning,
       signal: this.stats.signal,
       audio: this.stats.audio,

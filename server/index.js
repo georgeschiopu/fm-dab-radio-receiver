@@ -17,6 +17,8 @@ import {
   SESSION_COOKIE,
   SESSION_TTL_MS,
 } from './auth.js';
+import { getMeshtasticSettings, setMeshtasticSettings } from './userSettings.js';
+import { MESHTASTIC_DEFAULT_FREQ, resolveMeshtasticKey } from './meshtastic.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -75,6 +77,11 @@ const manager = new AudioStreamManager();
 manager.on('status', (s) => broadcast(statusMsg(s)));
 manager.on('scan', (m) => broadcast({ type: 'scan', ...m }));
 manager.on('error', (err) => broadcast({ type: 'error', message: err.message }));
+manager.on('info', (message) => {
+  console.log(`[meshtastic] ${message}`);
+  broadcast({ type: 'info', message });
+});
+manager.on('packet', (packet) => broadcast({ type: 'meshtastic', packet }));
 
 // MOT slideshow covers written by dablin -> broadcast to clients as base64.
 const slides = new SlideWatcher();
@@ -164,8 +171,23 @@ app.get('/api/config', requireAuth, (req, res) => {
     dabFreq: DAB_DEFAULT_FREQ,
     nfmFreq: NFM_DEFAULT_FREQ,
     amFreq: AM_DEFAULT_FREQ,
+    meshtasticFreq: Number(process.env.RTL_TCP_MESHTASTIC_FREQ || MESHTASTIC_DEFAULT_FREQ),
     squelch: 0,
   });
+});
+
+app.get('/api/meshtastic-config', requireAuth, (req, res) => {
+  res.json(getMeshtasticSettings(req.user));
+});
+
+app.put('/api/meshtastic-config', requireAuth, (req, res) => {
+  const rawKey = req.body?.key || 'default';
+  try {
+    resolveMeshtasticKey(rawKey);
+    res.json(setMeshtasticSettings(req.user, rawKey));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 app.get('/api/presets', requireAuth, async (req, res) => {
@@ -232,6 +254,8 @@ wss.on('connection', (ws, req) => {
       }
       clearSlides();
       try {
+        const meshtasticKey = mode === 'meshtastic' ? getMeshtasticSettings(ws.user).key : 'default';
+        if (mode === 'meshtastic') manager.setMeshtasticKey(meshtasticKey);
         if (
           !manager.running ||
           manager.host !== host ||
@@ -239,7 +263,7 @@ wss.on('connection', (ws, req) => {
           manager.mode !== mode ||
           !manager.connected
         ) {
-          await manager.start({ mode, host, port, freq, gain, service });
+          await manager.start({ mode, host, port, freq, gain, service, meshtasticKey });
         } else {
           manager.tune(freq, service);
           manager.setGain(gain);
@@ -253,6 +277,15 @@ wss.on('connection', (ws, req) => {
     } else if (msg.op === 'squelch') {
       const level = msg.level !== undefined ? Number(msg.level) : 0;
       if (Number.isFinite(level)) manager.setSquelch(level);
+    } else if (msg.op === 'meshtasticKey') {
+      if (manager.mode === 'meshtastic') {
+        try {
+          resolveMeshtasticKey(msg.key || 'default');
+          manager.setMeshtasticKey(msg.key || 'default');
+        } catch (err) {
+          ws.send(JSON.stringify({ type: 'error', message: err.message }));
+        }
+      }
     } else if (msg.op === 'scan') {
       const mode = msg.mode === 'nfm' ? 'nfm' : msg.mode === 'dab' ? 'dab' : 'fm';
       const host = msg.host || DEFAULT_HOST;
