@@ -13,6 +13,7 @@ const dabScanKey = (user) => `sdr-${user}-dab-scan`;
 // digitally inside the captured 1 MHz band, so the waterfall pans a sub-window
 // around the tuned frequency with a fixed center marker.
 const NFM_AM_VISIBLE_SPAN = 600_000;
+const MESHTASTIC_DEFAULT_FREQ = 869.525;
 
 // Stations are always shown sorted alphabetically by name (case-insensitive).
 const sortPresets = (list) =>
@@ -56,6 +57,7 @@ export default function App() {
   const [freq, setFreq] = useState('');
   const [nfmFreq, setNfmFreq] = useState('145.000');
   const [amFreq, setAmFreq] = useState('7.100');
+  const [meshtasticFreq, setMeshtasticFreq] = useState(MESHTASTIC_DEFAULT_FREQ.toFixed(3));
   const [dabFreq, setDabFreq] = useState('216.928');
   const [gain, setGain] = useState('');
   const [squelch, setSquelch] = useState(0);
@@ -81,6 +83,10 @@ export default function App() {
   const [dabService, setDabService] = useState('');
   const [dabSlide, setDabSlide] = useState(null);
   const [dabLogo, setDabLogo] = useState(null);
+  const [meshtasticPackets, setMeshtasticPackets] = useState([]);
+  const [meshtasticKeyMode, setMeshtasticKeyMode] = useState('default');
+  const [meshtasticKey, setMeshtasticKey] = useState('');
+  const [meshtasticKeyStatus, setMeshtasticKeyStatus] = useState('');
   const [presets, setPresets] = useState([]);
   const [newName, setNewName] = useState('');
   const [span, setSpan] = useState(288_000);
@@ -157,8 +163,13 @@ export default function App() {
         if (cfg.dabFreq) setDabFreq((cfg.dabFreq / 1e6).toFixed(3));
         if (cfg.nfmFreq) setNfmFreq((cfg.nfmFreq / 1e6).toFixed(3));
         if (cfg.amFreq) setAmFreq((cfg.amFreq / 1e6).toFixed(3));
+        if (cfg.meshtasticFreq) setMeshtasticFreq((cfg.meshtasticFreq / 1e6).toFixed(3));
         if (cfg.squelch !== undefined) setSquelch(cfg.squelch);
         loadPresets(cfg.mode || 'fm');
+        fetch('/api/meshtastic-config')
+          .then((r) => r.json())
+          .then((settings) => setMeshtasticKeyMode(settings.keyMode === 'custom' ? 'custom' : 'default'))
+          .catch(() => {});
       })
       .catch(() => {
         setHost('192.168.0.6');
@@ -168,9 +179,32 @@ export default function App() {
         setDabFreq('216.928');
         setNfmFreq('145.000');
         setAmFreq('7.100');
+        setMeshtasticFreq(MESHTASTIC_DEFAULT_FREQ.toFixed(3));
         setMode('fm');
         loadPresets('fm');
       });
+  };
+
+  const saveMeshtasticKey = async () => {
+    const key = meshtasticKeyMode === 'default' ? 'default' : meshtasticKey.trim();
+    if (meshtasticKeyMode === 'custom' && !key) {
+      setMeshtasticKeyStatus('Enter a channel key first');
+      return;
+    }
+    try {
+      const response = await fetch('/api/meshtastic-config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not save key');
+      setMeshtasticKey('');
+      setMeshtasticKeyStatus(meshtasticKeyMode === 'default' ? 'Using default key' : 'Custom key saved');
+      send({ op: 'meshtasticKey', key });
+    } catch (err) {
+      setMeshtasticKeyStatus(err.message);
+    }
   };
 
   useEffect(() => {
@@ -286,8 +320,16 @@ export default function App() {
       ws.onmessage = (ev) => {
         if (typeof ev.data === 'string') {
           const msg = JSON.parse(ev.data);
-          if (msg.type === 'status') {
-            if (msg.mode === 'dab') {
+           if (msg.type === 'status') {
+             if (msg.mode === 'meshtastic') {
+               setStatus(msg.connected ? `Meshtastic · ${msg.meshtasticPackets || 0} packets` : 'Tuning Meshtastic…');
+               if (msg.connected) {
+                 setStats({ signal: 0, audio: 0 });
+                 setCenterHz(msg.center != null ? msg.center : msg.freq);
+               }
+               if (msg.span) setSpan(msg.span);
+               if (msg.bins) setBins(msg.bins);
+             } else if (msg.mode === 'dab') {
               setDabInfo({
                 channel: msg.channel || null,
                 service: msg.service || null,
@@ -317,9 +359,14 @@ export default function App() {
               if (msg.bins) setBins(msg.bins);
             }
             setBusy(false);
-          } else if (msg.type === 'error') {
-            setStatus(`Error: ${msg.message}`);
-            setBusy(false);
+           } else if (msg.type === 'error') {
+             setStatus(`Error: ${msg.message}`);
+             setBusy(false);
+           } else if (msg.type === 'meshtastic') {
+             setMeshtasticPackets((prev) => [msg.packet, ...prev].slice(0, 100));
+             setStatus(`Meshtastic · packet from ${msg.packet.src}`);
+           } else if (msg.type === 'info') {
+             setStatus(msg.message);
           } else if (msg.type === 'slide') {
             setDabSlide(msg.data ? `data:${msg.mime};base64,${msg.data}` : null);
           } else if (msg.type === 'scan') {
@@ -415,8 +462,8 @@ export default function App() {
     if (mode === 'nfm') setNfmFreq(f);
     else setFreq(f);
     try {
-      const player = await ensurePlayer();
-      player.setVolume(volume);
+       const player = await ensurePlayer();
+       if (player) player.setVolume(volume);
       let ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) ws = await openWs();
       send({
@@ -428,7 +475,7 @@ export default function App() {
         gain: gain.trim() === '' ? undefined : Number(gain),
         squelch: mode === 'nfm' ? squelch : 0,
       });
-      player.start();
+       player.start();
       playingRef.current = true;
       setPlaying(true);
     } catch (err) {
@@ -574,9 +621,9 @@ export default function App() {
     setBusy(true);
     try {
       const m = modeOverride || mode;
-      const target = freqOverride ?? (m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : m === 'am' ? amFreq : freq);
-      const player = await ensurePlayer();
-      player.setVolume(volume);
+       const target = freqOverride ?? (m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : m === 'am' ? amFreq : m === 'meshtastic' ? meshtasticFreq : freq);
+       const player = m === 'meshtastic' ? null : await ensurePlayer();
+       if (player) player.setVolume(volume);
       let ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) ws = await openWs();
       const freqHz = Math.round(parseFloat(target) * 1e6);
@@ -592,12 +639,13 @@ export default function App() {
         service: m === 'dab' ? dabServiceNow || undefined : undefined,
         squelch: m === 'nfm' ? squelch : 0,
       });
-      player.start();
+       if (player) player.start();
       playingRef.current = true;
       setPlaying(true);
       setStatus('Tuning…');
-      setDabInfo(null);
-      setDabSlide(null);
+       setDabInfo(null);
+       setDabSlide(null);
+       if (m === 'meshtastic') setMeshtasticPackets([]);
       if (m === 'dab') setDabServices([]);
       if (spectrumRef.current) spectrumRef.current.clear();
     } catch (err) {
@@ -672,7 +720,7 @@ export default function App() {
     setMode(m);
     loadPresets(m);
     if (playingRef.current) {
-      tuneFreq(m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : m === 'am' ? amFreq : freq, m, m === 'dab' ? dabService : undefined);
+      tuneFreq(m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : m === 'am' ? amFreq : m === 'meshtastic' ? meshtasticFreq : freq, m, m === 'dab' ? dabService : undefined);
     }
   };
 
@@ -684,6 +732,11 @@ export default function App() {
   const changeAmFreq = (e) => {
     setAmFreq(e.target.value);
     if (playingRef.current && mode === 'am') tuneFreq(e.target.value, 'am');
+  };
+
+  const changeMeshtasticFreq = (e) => {
+    setMeshtasticFreq(e.target.value);
+    if (playingRef.current && mode === 'meshtastic') tuneFreq(e.target.value, 'meshtastic');
   };
 
   const changeGain = (e) => {
@@ -705,7 +758,7 @@ export default function App() {
 
   const addPreset = () => {
     const name = newName.trim();
-    const cur = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : freq;
+    const cur = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : mode === 'meshtastic' ? meshtasticFreq : freq;
     if (!name || !parseFloat(cur)) return;
     const next = sortPresets([
       ...presets,
@@ -726,6 +779,7 @@ export default function App() {
     const m = p.mode || 'fm';
     if (m === 'nfm') setNfmFreq(p.freq);
     else if (m === 'am') setAmFreq(p.freq);
+    else if (m === 'meshtastic') setMeshtasticFreq(p.freq);
     else if (m === 'dab') {
       setDabFreq(p.freq);
       setDabService(p.service || '');
@@ -782,7 +836,7 @@ export default function App() {
     const fb = parseFloat(b);
     return Number.isFinite(fa) && Number.isFinite(fb) && Math.abs(fa - fb) < 5e-4;
   };
-  const currentFreq = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : freq;
+  const currentFreq = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : mode === 'meshtastic' ? meshtasticFreq : freq;
   const currentService = mode === 'dab' ? dabInfo?.service || dabService || '' : '';
   const isPlayingPreset = (p) => {
     if (!playing || !p.freq || !freqMatch(p.freq, currentFreq)) return false;
@@ -905,6 +959,12 @@ export default function App() {
         >
           DAB
         </button>
+        <button
+          className={mode === 'meshtastic' ? 'active' : ''}
+          onClick={() => changeMode('meshtastic')}
+        >
+          Meshtastic
+        </button>
       </div>
 
       <div className="columns">
@@ -935,14 +995,14 @@ export default function App() {
             </div>
           </label>
 
-          {mode === 'fm' || mode === 'nfm' || mode === 'am' ? (
+          {mode === 'fm' || mode === 'nfm' || mode === 'am' || mode === 'meshtastic' ? (
             <>
               <label>
                 Frequency (MHz)
                 <input
-                  value={mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : freq}
-                  onChange={mode === 'nfm' ? changeNfmFreq : mode === 'am' ? changeAmFreq : changeFreq}
-                  placeholder={mode === 'nfm' ? '145.000' : mode === 'am' ? '7.100' : '95.1'}
+                  value={mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : mode === 'meshtastic' ? meshtasticFreq : freq}
+                  onChange={mode === 'nfm' ? changeNfmFreq : mode === 'am' ? changeAmFreq : mode === 'meshtastic' ? changeMeshtasticFreq : changeFreq}
+                  placeholder={mode === 'nfm' ? '145.000' : mode === 'am' ? '7.100' : mode === 'meshtastic' ? '869.525' : '95.1'}
                   inputMode="decimal"
                 />
               </label>
@@ -963,6 +1023,27 @@ export default function App() {
                     </span>
                   </div>
                 </label>
+              )}
+              {mode === 'meshtastic' && (
+                <div className="meshtastic-settings">
+                  <label>
+                    Channel key
+                    <select value={meshtasticKeyMode} onChange={(e) => setMeshtasticKeyMode(e.target.value)}>
+                      <option value="default">Default key</option>
+                      <option value="custom">Custom PSK</option>
+                    </select>
+                  </label>
+                  {meshtasticKeyMode === 'custom' && (
+                    <input
+                      type="password"
+                      value={meshtasticKey}
+                      onChange={(e) => setMeshtasticKey(e.target.value)}
+                      placeholder="Hex or Base64 PSK"
+                    />
+                  )}
+                  <button onClick={saveMeshtasticKey}>Save channel key</button>
+                  {meshtasticKeyStatus && <span className="meshtastic-key-status">{meshtasticKeyStatus}</span>}
+                </div>
               )}
             </>
           ) : (
@@ -1155,24 +1236,28 @@ export default function App() {
             </div>
           )}
 
-          <label>
-            Volume
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value={volume}
-              onChange={changeVolume}
-            />
-          </label>
+          {mode !== 'meshtastic' && (
+            <label>
+              Volume
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={volume}
+                onChange={changeVolume}
+              />
+            </label>
+          )}
         </div>
 
         <div className="col col-center">
-          {mode === 'fm' || mode === 'nfm' || mode === 'am' ? (
+          {mode === 'fm' || mode === 'nfm' || mode === 'am' || mode === 'meshtastic' ? (
             <div className="waterfall-wrap">
               <div className="waterfall-title">
-                {mode === 'nfm' || mode === 'am'
+                {mode === 'meshtastic'
+                  ? `Meshtastic LoRa · ${currentFreq} MHz`
+                  : mode === 'nfm' || mode === 'am'
                   ? `Spectrum ±${(NFM_AM_VISIBLE_SPAN / 2 / 1e6).toFixed(2)} MHz around ${currentFreq} MHz`
                   : centerHz
                     ? `Spectrum ±${(span / 2 / 1e6).toFixed(2)} MHz around ${fmtMHz(centerHz)}`
@@ -1200,7 +1285,7 @@ export default function App() {
                 )}
               </div>
               <div className="waterfall-axis">
-                {mode === 'nfm' || mode === 'am' ? (
+                {mode === 'nfm' || mode === 'am' || mode === 'meshtastic' ? (
                   <>
                     <span>{fmtMHz(Math.round((parseFloat(currentFreq) || 0) * 1e6) - NFM_AM_VISIBLE_SPAN / 2)}</span>
                     <span className="waterfall-center">{(parseFloat(currentFreq) || 0).toFixed(4)} MHz</span>
@@ -1240,6 +1325,41 @@ export default function App() {
                   </div>
                 </div>
               </div>
+            </div>
+          )}
+
+          {mode === 'meshtastic' && (
+            <div className="meshtastic-panel">
+              <div className="meshtastic-panel-title">Received packets</div>
+              {meshtasticPackets.length === 0 ? (
+                <div className="stations-empty">Waiting for Meshtastic traffic…</div>
+              ) : (
+                meshtasticPackets.map((packet) => (
+                  <div className="meshtastic-packet" key={`${packet.src}-${packet.packetId}-${packet.timestamp}`}>
+                    <div className="meshtastic-packet-head">
+                      <strong>{packet.src}</strong>
+                      <span>{packet.snr != null ? `SNR ${packet.snr} dB` : ''}{packet.rssi != null ? ` · RSSI ${packet.rssi} dBm` : ''}</span>
+                    </div>
+                    {packet.message && <div className="meshtastic-message">{packet.message}</div>}
+                    {packet.position && (
+                      <div className="meshtastic-detail">
+                        Position {packet.position.latitude?.toFixed(5)}, {packet.position.longitude?.toFixed(5)}
+                        {packet.position.altitude != null ? ` · ${packet.position.altitude} m` : ''}
+                      </div>
+                    )}
+                    {packet.telemetry && (
+                      <div className="meshtastic-detail">
+                        Telemetry {packet.telemetry.voltage != null ? `${packet.telemetry.voltage.toFixed(2)} V` : ''}
+                        {packet.telemetry.temperature != null ? ` · ${packet.telemetry.temperature.toFixed(1)} °C` : ''}
+                        {packet.telemetry.relativeHumidity != null ? ` · ${packet.telemetry.relativeHumidity.toFixed(1)}% RH` : ''}
+                      </div>
+                    )}
+                    {!packet.message && !packet.position && !packet.telemetry && (
+                      <div className="meshtastic-detail">{packet.portName || 'Packet'} · {packet.hops}</div>
+                    )}
+                  </div>
+                ))
+              )}
             </div>
           )}
 

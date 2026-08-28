@@ -1,11 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import net from 'node:net';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { RtlTcpClient, CMD, DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
 import { FmDecoder, AmDecoder, LinearResampler, ChannelPowerMeter } from './dsp.js';
 import { SpectrumAnalyzer, DEFAULT_BINS } from './spectrum.js';
 import { channelBlockForFreq, channelFreqKHz, DabReceiver } from './dab.js';
 import { AudioStreamManager, scanThresholdFor } from './audioStream.js';
+import { parseMeshtasticPacket, resolveMeshtasticKey } from './meshtastic.js';
 import { imageSizeOfFile } from './fmLogos.js';
 import {
   getPresets,
@@ -80,6 +82,42 @@ function synthNoiseIq(samples, seed = 12345) {
     buf[i * 2 + 1] = Math.round(128 + (rand() - 0.5) * 200);
   }
   return buf;
+}
+
+function varint(value) {
+  let n = BigInt(value);
+  const out = [];
+  while (n > 127n) {
+    out.push(Number(n & 127n) | 128);
+    n >>= 7n;
+  }
+  out.push(Number(n));
+  return Buffer.from(out);
+}
+
+function protobufBytes(field, value) {
+  return Buffer.concat([varint(field << 3 | 2), varint(value.length), value]);
+}
+
+function protobufVarint(field, value) {
+  return Buffer.concat([varint(field << 3), varint(value)]);
+}
+
+function encryptedMeshtasticText({ src = 0x12345678, dst = 0xffffffff, packetId = 42, message = 'hello mesh' } = {}) {
+  const app = Buffer.concat([protobufVarint(1, 1), protobufBytes(2, Buffer.from(message))]);
+  const key = resolveMeshtasticKey('default');
+  const iv = Buffer.alloc(16);
+  iv.writeUInt32LE(packetId, 0);
+  iv.writeUInt32LE(src, 8);
+  const cipher = crypto.createCipheriv('aes-128-ctr', key, iv);
+  const encrypted = Buffer.concat([cipher.update(app), cipher.final()]);
+  const header = Buffer.alloc(16);
+  header.writeUInt32LE(dst, 0);
+  header.writeUInt32LE(src, 4);
+  header.writeUInt32LE(packetId, 8);
+  header[12] = 0x60;
+  header[13] = 0x2a;
+  return { crc: 1, payload: Buffer.concat([header, encrypted]).toString('base64') };
 }
 
 // Strong unmodulated NFM carrier at +offset Hz (inside the scanner's channel
@@ -186,6 +224,28 @@ describe('rtl-tcp protocol', () => {
       [CMD.SET_FREQ, 88_500_000],
     ];
     expect(receivedCmds).toEqual(expected);
+  });
+});
+
+describe('Meshtastic parser', () => {
+  it('decrypts default-key text packets and exposes the packet header', () => {
+    const packet = parseMeshtasticPacket(encryptedMeshtasticText(), 'default');
+    expect(packet.src).toBe('!12345678');
+    expect(packet.dst).toBe('!ffffffff');
+    expect(packet.message).toBe('hello mesh');
+    expect(packet.portName).toBe('TEXT_MESSAGE_APP');
+    expect(packet.hops).toBe('3/3');
+  });
+
+  it('suppresses duplicate source and packet ids', () => {
+    const raw = encryptedMeshtasticText({ packetId: 99 });
+    const seen = new Map();
+    expect(parseMeshtasticPacket(raw, 'default', seen)).not.toBeNull();
+    expect(parseMeshtasticPacket(raw, 'default', seen)).toBeNull();
+  });
+
+  it('expands the Meshtastic short default key', () => {
+    expect(resolveMeshtasticKey('AQ==')).toEqual(resolveMeshtasticKey('default'));
   });
 });
 
@@ -679,6 +739,22 @@ describe('Preset store', () => {
       expect(aliceAm[0].mode).toBe('am');
       expect(getPresets('bob', 'fm').length).toBe(1);
       expect(getPresets('alice', 'fm').length).toBe(2);
+    } finally {
+      try {
+        fs.unlinkSync(file);
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  it('backfills modes added after a user record was created', () => {
+    const file = `/tmp/opencode-legacy-presets-${process.pid}.json`;
+    fs.writeFileSync(file, JSON.stringify({ alice: { fm: [] } }));
+    setPresetsFileForTests(file);
+    try {
+      expect(getPresets('alice', 'meshtastic')).toEqual([]);
+      expect(getPresets('alice', 'dab')).toEqual([]);
     } finally {
       try {
         fs.unlinkSync(file);

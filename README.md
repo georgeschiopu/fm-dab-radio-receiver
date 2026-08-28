@@ -1,4 +1,4 @@
-# FM / NFM / AM / DAB Radio Receiver
+# FM / NFM / AM / DAB / Meshtastic Radio Receiver
 
 A lightweight web-based radio receiver for **broadcast FM**, **narrowband FM (NFM)** for amateur radio, **HF AM** (via an upconverter), and **DAB/DAB+** (digital radio) fed by a remote [rtl_tcp](https://github.com/keenerd/rtl-sdr-blog) SDR server.
 
@@ -9,6 +9,7 @@ The Node.js backend demodulates FM/NFM/AM IQ samples in-process and decodes DAB 
 - **FM mode** — in-process FFT-based FM demodulator (288 kHz sample rate), signal + audio meters, live spectrum analyzer.
 - **NFM mode** — narrowband FM for amateur bands: 1 MS/s rtl_tcp so the **±0.5 MHz waterfall** (centered on the tuned frequency) shows adjacent activity. In-process NFM demod (4 kHz voice bandwidth) with **AGC** for a steady level and a manual **Squelch** slider (off by default, NFM-only) that mutes the noise floor when no carrier is locked.
 - **AM mode** — amplitude modulation for HF voice bands (e.g. 40 m, via a 125 MHz upconverter): the same 1 MS/s **±0.5 MHz waterfall** as NFM, in-process envelope-detector demod (5 kHz audio bandwidth) with **AGC** so strong and weak stations play at a steady level. Tune to `f + 125 MHz` (upconverter LO) when using a Ham It Up-style converter.
+- **Meshtastic mode** — EU868 LoRa packet demodulation at 869.525 MHz using `lorarx`, with text messages, node positions, and device/environment telemetry. The built-in default key and encrypted per-account custom PSKs are supported.
 - **DAB mode** — full ETI decode chain (`eti-cmdline-rtl_tcp` → `dablin`) producing 48 kHz audio; live ensemble name, playing service and SNR on a DAB channel selector (5A–13F), plus a **Station dropdown** to pick a specific service from the tuned ensemble (or "first station found").
 - **Presets** — save/load stations in the browser (localStorage), kept **separately per mode**. DAB presets remember both the channel and the selected station, so clicking one tunes the ensemble and plays that service (`dablin -l`). FM/NFM/AM presets show a station logo when available: the backend lazily looks each saved station up in the free [radio-browser.info](https://www.radio-browser.info) community database (by name + frequency, GB-first), downloads the favicon to `server/logos/fm/`, and caches the result. No API key needed; downloaded logos are gitignored.
 - **Remote SDR** — works with any `rtl_tcp` server on your network (or localhost).
@@ -54,6 +55,7 @@ All options are environment variables (see `docker-compose.yml`):
 | `RTL_TCP_DAB_FREQ` | `216.928e6`  | Initial DAB ensemble frequency (Hz), mapped to a block  |
 | `RTL_TCP_NFM_FREQ` | `145.0e6`    | Initial NFM frequency (Hz)                              |
 | `RTL_TCP_AM_FREQ`  | `7.1e6`      | Initial AM frequency (Hz)                               |
+| `RTL_TCP_MESHTASTIC_FREQ` | `869.525e6` | Initial EU868 Meshtastic frequency (Hz)            |
 | `PORT`             | `8080`       | Web UI port                                             |
 
 Example with a DAB default:
@@ -101,13 +103,14 @@ Runs offline unit tests against a fake rtl_tcp server (protocol + FM/NFM/AM demo
 - **FM**: the backend connects to rtl_tcp at 288 kS/s, demodulates FM with a zero-IF FFT pipeline (120 Hz bins), and streams mono 48 kHz int16 PCM over a WebSocket.
 - **NFM**: the backend connects at 1 MS/s so the whole ±0.5 MHz waterfall span is visible; demodulates narrowband FM with a 4 kHz voice bandwidth, applies AGC to hold a steady audio level, optionally gates the output with a carrier-lock squelch, and resamples 50 kHz → 48 kHz server-side before streaming (so voices keep the correct pitch).
 - **AM**: the backend connects at the same 1 MS/s as NFM (shared waterfall); demodulates amplitude modulation with a complex-envelope detector (√(I²+Q²)) followed by a DC blocker that strips the carrier, low-passes to 5 kHz, applies AGC for a steady level, and resamples 50 kHz → 48 kHz before streaming. No squelch: on an empty frequency the AGC just keeps the hiss from clipping.
+- **Meshtastic**: the backend pipes raw 1 MS/s unsigned IQ into `lorarx` with EU868 Meshtastic settings (250 kHz bandwidth, SF7–SF11), decrypts the JSON packet payload with the selected account key, and decodes text, position, node info, and telemetry protobuf fields.
 - **DAB**: the backend runs `eti-cmdline-rtl_tcp -H host -C <channel>` (rtl_tcp at 2.048 MS/s) and pipes ETI frames into `dablin` (PCM to stdout), which emits the audio at the service's native rate/format (48/32/24 kHz, mono/stereo, float32 or int16); the server downmixes to mono int16 and the client plays it at the reported rate. `-l <label>` selects a specific station from the ensemble's FIC listing.
 - The client uses a Web Audio `AudioContext` at 48 kHz for gapless playback and renders spectrum/waterfall lines on a canvas.
 
 ### WebSocket protocol
 
-- Text `status` messages carry `mode`, `connected`, `freq`, `signal`, `audio`, `squelch`, and DAB fields (`channel`, `service`, `ensemble`, `snr`).
-- Client → server text ops: `tune` (mode, frequency, gain, optional DAB `service` and NFM `squelch`), `gain`, `squelch`, `stop`.
+- Text `status` messages carry `mode`, `connected`, `freq`, `signal`, `audio`, `squelch`, and DAB fields (`channel`, `service`, `ensemble`, `snr`). Meshtastic packets use `{type: "meshtastic", packet}` messages.
+- Client → server text ops: `tune` (mode, frequency, gain, optional DAB `service` and NFM `squelch`), `gain`, `squelch`, `meshtasticKey`, `stop`.
 - Binary frames: `0x01` = PCM int16 LE (mono 48 kHz), `0x02` = spectrum dB line (`uint16 LE` length prefix).
 
 ## Project layout
@@ -117,6 +120,9 @@ server/
   index.js        Express + WebSocket server, protocol handling
   audioStream.js  mode-aware stream manager (FM / NFM / DAB)
   dab.js          DAB pipeline: eti-cmdline-rtl_tcp | dablin, channel map
+  meshtastic.js   LoRa packet parsing, decryption, and Meshtastic protobuf fields
+  meshtasticReceiver.js  lorarx child-process stream adapter
+  userSettings.js account-scoped encrypted Meshtastic key settings
   dsp.js          FM/NFM/AM demodulators (AGC, squelch, 50k->48k resampler)
   rtlTcp.js       rtl_tcp client (single-instance, exclusive connection)
   spectrum.js     spectrum analyzer (FFT -> dB lines)
@@ -126,6 +132,6 @@ client/
   src/audio.js    Web Audio playback
   src/SpectrumAnalyzer.jsx  smooth FM spectrum canvas
   src/Waterfall.jsx  NFM waterfall canvas
-Dockerfile        multi-stage: build eti-stuff + client, runtime with dablin
+Dockerfile        multi-stage: build eti-stuff + client, runtime with dablin + lorarx
 docker-compose.yml
 ```

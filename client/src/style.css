@@ -104,6 +104,64 @@ select {
   gap: 4px;
 }
 
+.meshtastic-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+}
+
+.meshtastic-key-status {
+  color: #8b949e;
+  font-size: 12px;
+}
+
+.meshtastic-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.meshtastic-panel-title {
+  color: #8b949e;
+  font-size: 13px;
+}
+
+.meshtastic-packet {
+  padding: 8px 10px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.meshtastic-packet-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.meshtastic-packet-head span,
+.meshtastic-detail {
+  color: #8b949e;
+}
+
+.meshtastic-message {
+  margin-top: 5px;
+  color: #e6edf3;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.meshtastic-detail {
+  margin-top: 5px;
+}
+
 .dab-info {
   border: 1px solid #30363d;
   border-radius: 6px;

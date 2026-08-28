@@ -141,6 +141,10 @@ export function cookieUser(req) {
   return verifyToken(parts.slice(SESSION_COOKIE.length + 1));
 }
 
+export function getSessionSecret() {
+  return SECRET;
+}
+
 export function setUsersFileForTests(file) {
   overrideFile = file;
   usersCache = null;

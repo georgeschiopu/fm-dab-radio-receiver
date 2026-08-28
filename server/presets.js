@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const MODES = ['fm', 'nfm', 'am', 'dab'];
+const MODES = ['fm', 'nfm', 'am', 'dab', 'meshtastic'];
 const DEFAULT_FILE = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -48,6 +48,9 @@ function load() {
 function userPresets(user) {
   const map = load();
   if (!map[user] || typeof map[user] !== 'object') map[user] = empty();
+  for (const mode of MODES) {
+    if (!Array.isArray(map[user][mode])) map[user][mode] = [];
+  }
   return map[user];
 }
 
