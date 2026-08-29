@@ -1426,6 +1426,7 @@ export default function App() {
         </div>
 
         <div className="col col-right">
+          {mode !== 'adsb' && (
           <div className="stations">
             <div className="stations-title">{mode === 'dab' ? 'Favourites' : 'Stations'}</div>
             {presets.length === 0 && (
@@ -1468,6 +1469,7 @@ export default function App() {
               </div>
             )}
           </div>
+          )}
         </div>
       </div>
 

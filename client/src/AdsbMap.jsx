@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Circle, Tooltip, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Circle, Tooltip, useMap } from 'react-leaflet';
+import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Web-Mercator metres per pixel at a given latitude and zoom.
@@ -18,6 +19,34 @@ function zoomForRange(lat, rangeKm) {
 function colorFor(a) {
   return a.emergency ? '#ff5252' : a.altitude > 30000 ? '#ffd166' : '#4fd1ff';
 }
+
+// Small plane icon (pointing north), rotated to the aircraft's ground track.
+// Built with a divIcon so no Leaflet marker image assets are needed and the
+// icon can be recoloured per aircraft.
+function planeIcon(color, track, selected) {
+  const stroke = selected ? '#ffffff' : '#0a0e14';
+  const heading = Number.isFinite(track) ? track : 0;
+  const ring = selected
+    ? '<circle cx="12" cy="12" r="10" fill="none" stroke="#ffffff" stroke-width="2"/>'
+    : '';
+  return L.divIcon({
+    className: 'adsb-plane-slot',
+    html: `<svg viewBox="0 0 24 24" width="24" height="24" style="transform: rotate(${heading}deg); transform-origin: 12px 12px; overflow: visible;">
+      ${ring}
+      <path fill="${color}" stroke="${stroke}" stroke-width="1.1" d="M21 16v-2l-8-5V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/>
+    </svg>`,
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+  });
+}
+
+// Small home-point marker centred on the configured lat/lon.
+const homeIcon = L.divIcon({
+  className: 'adsb-plane-slot',
+  html: '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="6" fill="#f0883e" stroke="#ffffff" stroke-width="2"/></svg>',
+  iconSize: [16, 16],
+  iconAnchor: [8, 8],
+});
 
 // Keeps the view centred on the home point. Only triggers when the home point
 // or the selected range changes, so continuous aircraft updates don't reset
@@ -68,29 +97,24 @@ export default function AdsbMap({ aircraft = [], homeLat, homeLon, rangeKm = 100
             const isSel = selected === a.icao;
             const color = colorFor(a);
             return (
-              <CircleMarker
+              <Marker
                 key={a.icao}
-                center={[a.lat, a.lon]}
-                radius={isSel ? 8 : 6}
-                pathOptions={{ color, fillColor: color, fillOpacity: 0.9, weight: 2 }}
+                position={[a.lat, a.lon]}
+                icon={planeIcon(color, a.track, isSel)}
                 eventHandlers={{ click: () => onSelect && onSelect(a.icao) }}
               >
-                <Tooltip direction="top" offset={[0, -8]} opacity={1}>
+                <Tooltip direction="top" offset={[0, -14]} opacity={1}>
                   <span className="adsb-tip">
                     {a.callsign || a.icao.toUpperCase()}
                     {a.altitude != null ? ` · ${Math.round(a.altitude)} ft` : ''}
                   </span>
                 </Tooltip>
-              </CircleMarker>
+              </Marker>
             );
           })}
-          <CircleMarker
-            center={[home.lat, home.lon]}
-            radius={4}
-            pathOptions={{ color: '#ffffff', fillColor: '#333333', fillOpacity: 1, weight: 2 }}
-          >
-            <Tooltip direction="top" offset={[0, -8]}>HOME</Tooltip>
-          </CircleMarker>
+          <Marker position={[home.lat, home.lon]} icon={homeIcon}>
+            <Tooltip direction="top" offset={[0, -10]}>HOME</Tooltip>
+          </Marker>
         </MapContainer>
       </div>
       {!homeValid && (

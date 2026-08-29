@@ -1056,6 +1056,11 @@ button:disabled {
   font-size: 11px;
 }
 
+.adsb-plane-slot {
+  background: transparent;
+  border: none;
+}
+
 .adsb-map-hint {
   font-size: 11px;
   color: #d29922;
