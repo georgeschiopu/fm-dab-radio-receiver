@@ -19,6 +19,7 @@ import {
 } from './auth.js';
 import { getMeshtasticSettings, setMeshtasticSettings } from './userSettings.js';
 import { MESHTASTIC_DEFAULT_FREQ, resolveMeshtasticKey } from './meshtastic.js';
+import { ADSB_DEFAULT_FREQ } from './adsb.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -82,6 +83,7 @@ manager.on('info', (message) => {
   broadcast({ type: 'info', message });
 });
 manager.on('packet', (packet) => broadcast({ type: 'meshtastic', packet }));
+manager.on('aircraft', (aircraft) => broadcast({ type: 'adsb', aircraft }));
 
 // MOT slideshow covers written by dablin -> broadcast to clients as base64.
 const slides = new SlideWatcher();
@@ -172,6 +174,9 @@ app.get('/api/config', requireAuth, (req, res) => {
     nfmFreq: NFM_DEFAULT_FREQ,
     amFreq: AM_DEFAULT_FREQ,
     meshtasticFreq: Number(process.env.RTL_TCP_MESHTASTIC_FREQ || MESHTASTIC_DEFAULT_FREQ),
+    adsbFreq: Number(process.env.RTL_TCP_ADSB_FREQ || ADSB_DEFAULT_FREQ),
+    homeLat: process.env.HOME_LAT ? Number(process.env.HOME_LAT) : null,
+    homeLon: process.env.HOME_LON ? Number(process.env.HOME_LON) : null,
     squelch: 0,
   });
 });
