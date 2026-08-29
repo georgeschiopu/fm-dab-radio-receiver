@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { AudioPlayer } from './audio.js';
 import SpectrumAnalyzer from './SpectrumAnalyzer.jsx';
 import Waterfall from './Waterfall.jsx';
+import AdsbMap from './AdsbMap.jsx';
+import AdsbTable from './AdsbTable.jsx';
 
 // Presets are stored per mode and per user so FM / NFM station lists stay separate.
 const presetKey = (user, m) => `sdr-${user}-${m}-stations`;
@@ -58,6 +60,12 @@ export default function App() {
   const [nfmFreq, setNfmFreq] = useState('145.000');
   const [amFreq, setAmFreq] = useState('7.100');
   const [meshtasticFreq, setMeshtasticFreq] = useState(MESHTASTIC_DEFAULT_FREQ.toFixed(3));
+  const [adsbFreq, setAdsbFreq] = useState('1090.000');
+  const [adsbAircraft, setAdsbAircraft] = useState([]);
+  const [adsbSelected, setAdsbSelected] = useState(null);
+  const [adsbRange, setAdsbRange] = useState(100);
+  const [homeLat, setHomeLat] = useState(null);
+  const [homeLon, setHomeLon] = useState(null);
   const [dabFreq, setDabFreq] = useState('216.928');
   const [gain, setGain] = useState('');
   const [squelch, setSquelch] = useState(0);
@@ -164,6 +172,9 @@ export default function App() {
         if (cfg.nfmFreq) setNfmFreq((cfg.nfmFreq / 1e6).toFixed(3));
         if (cfg.amFreq) setAmFreq((cfg.amFreq / 1e6).toFixed(3));
         if (cfg.meshtasticFreq) setMeshtasticFreq((cfg.meshtasticFreq / 1e6).toFixed(3));
+        if (cfg.adsbFreq) setAdsbFreq((cfg.adsbFreq / 1e6).toFixed(3));
+        if (cfg.homeLat != null) setHomeLat(cfg.homeLat);
+        if (cfg.homeLon != null) setHomeLon(cfg.homeLon);
         if (cfg.squelch !== undefined) setSquelch(cfg.squelch);
         loadPresets(cfg.mode || 'fm');
         fetch('/api/meshtastic-config')
@@ -327,9 +338,15 @@ export default function App() {
                  setStats({ signal: 0, audio: 0 });
                  setCenterHz(msg.center != null ? msg.center : msg.freq);
                }
-               if (msg.span) setSpan(msg.span);
-               if (msg.bins) setBins(msg.bins);
-             } else if (msg.mode === 'dab') {
+                if (msg.span) setSpan(msg.span);
+                if (msg.bins) setBins(msg.bins);
+              } else if (msg.mode === 'adsb') {
+                setStatus(msg.connected ? `ADS-B · ${msg.adsbCount || 0} aircraft` : 'Tuning ADS-B…');
+                if (msg.connected) {
+                  setStats({ signal: 0, audio: 0 });
+                  setCenterHz(msg.center != null ? msg.center : msg.freq);
+                }
+              } else if (msg.mode === 'dab') {
               setDabInfo({
                 channel: msg.channel || null,
                 service: msg.service || null,
@@ -362,10 +379,13 @@ export default function App() {
            } else if (msg.type === 'error') {
              setStatus(`Error: ${msg.message}`);
              setBusy(false);
-           } else if (msg.type === 'meshtastic') {
-             setMeshtasticPackets((prev) => [msg.packet, ...prev].slice(0, 100));
-             setStatus(`Meshtastic · packet from ${msg.packet.src}`);
-           } else if (msg.type === 'info') {
+            } else if (msg.type === 'meshtastic') {
+              setMeshtasticPackets((prev) => [msg.packet, ...prev].slice(0, 100));
+              setStatus(`Meshtastic · packet from ${msg.packet.src}`);
+            } else if (msg.type === 'adsb') {
+              setAdsbAircraft(msg.aircraft || []);
+              setStatus(`ADS-B · ${(msg.aircraft || []).length} aircraft`);
+            } else if (msg.type === 'info') {
              setStatus(msg.message);
           } else if (msg.type === 'slide') {
             setDabSlide(msg.data ? `data:${msg.mime};base64,${msg.data}` : null);
@@ -621,8 +641,8 @@ export default function App() {
     setBusy(true);
     try {
       const m = modeOverride || mode;
-       const target = freqOverride ?? (m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : m === 'am' ? amFreq : m === 'meshtastic' ? meshtasticFreq : freq);
-       const player = m === 'meshtastic' ? null : await ensurePlayer();
+       const target = freqOverride ?? (m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : m === 'am' ? amFreq : m === 'meshtastic' ? meshtasticFreq : m === 'adsb' ? adsbFreq : freq);
+       const player = m === 'meshtastic' || m === 'adsb' ? null : await ensurePlayer();
        if (player) player.setVolume(volume);
       let ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) ws = await openWs();
@@ -646,6 +666,7 @@ export default function App() {
        setDabInfo(null);
        setDabSlide(null);
        if (m === 'meshtastic') setMeshtasticPackets([]);
+       if (m === 'adsb') setAdsbAircraft([]);
       if (m === 'dab') setDabServices([]);
       if (spectrumRef.current) spectrumRef.current.clear();
     } catch (err) {
@@ -720,7 +741,7 @@ export default function App() {
     setMode(m);
     loadPresets(m);
     if (playingRef.current) {
-      tuneFreq(m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : m === 'am' ? amFreq : m === 'meshtastic' ? meshtasticFreq : freq, m, m === 'dab' ? dabService : undefined);
+      tuneFreq(m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : m === 'am' ? amFreq : m === 'meshtastic' ? meshtasticFreq : m === 'adsb' ? adsbFreq : freq, m, m === 'dab' ? dabService : undefined);
     }
   };
 
@@ -737,6 +758,11 @@ export default function App() {
   const changeMeshtasticFreq = (e) => {
     setMeshtasticFreq(e.target.value);
     if (playingRef.current && mode === 'meshtastic') tuneFreq(e.target.value, 'meshtastic');
+  };
+
+  const changeAdsbFreq = (e) => {
+    setAdsbFreq(e.target.value);
+    if (playingRef.current && mode === 'adsb') tuneFreq(e.target.value, 'adsb');
   };
 
   const changeGain = (e) => {
@@ -758,7 +784,7 @@ export default function App() {
 
   const addPreset = () => {
     const name = newName.trim();
-    const cur = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : mode === 'meshtastic' ? meshtasticFreq : freq;
+    const cur = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : mode === 'meshtastic' ? meshtasticFreq : mode === 'adsb' ? adsbFreq : freq;
     if (!name || !parseFloat(cur)) return;
     const next = sortPresets([
       ...presets,
@@ -780,6 +806,7 @@ export default function App() {
     if (m === 'nfm') setNfmFreq(p.freq);
     else if (m === 'am') setAmFreq(p.freq);
     else if (m === 'meshtastic') setMeshtasticFreq(p.freq);
+    else if (m === 'adsb') setAdsbFreq(p.freq);
     else if (m === 'dab') {
       setDabFreq(p.freq);
       setDabService(p.service || '');
@@ -836,7 +863,7 @@ export default function App() {
     const fb = parseFloat(b);
     return Number.isFinite(fa) && Number.isFinite(fb) && Math.abs(fa - fb) < 5e-4;
   };
-  const currentFreq = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : mode === 'meshtastic' ? meshtasticFreq : freq;
+  const currentFreq = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : mode === 'meshtastic' ? meshtasticFreq : mode === 'adsb' ? adsbFreq : freq;
   const currentService = mode === 'dab' ? dabInfo?.service || dabService || '' : '';
   const isPlayingPreset = (p) => {
     if (!playing || !p.freq || !freqMatch(p.freq, currentFreq)) return false;
@@ -965,6 +992,12 @@ export default function App() {
         >
           Meshtastic
         </button>
+        <button
+          className={mode === 'adsb' ? 'active' : ''}
+          onClick={() => changeMode('adsb')}
+        >
+          ADS-B
+        </button>
       </div>
 
       <div className="columns">
@@ -995,14 +1028,14 @@ export default function App() {
             </div>
           </label>
 
-          {mode === 'fm' || mode === 'nfm' || mode === 'am' || mode === 'meshtastic' ? (
+          {mode === 'fm' || mode === 'nfm' || mode === 'am' || mode === 'meshtastic' || mode === 'adsb' ? (
             <>
               <label>
                 Frequency (MHz)
                 <input
-                  value={mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : mode === 'meshtastic' ? meshtasticFreq : freq}
-                  onChange={mode === 'nfm' ? changeNfmFreq : mode === 'am' ? changeAmFreq : mode === 'meshtastic' ? changeMeshtasticFreq : changeFreq}
-                  placeholder={mode === 'nfm' ? '145.000' : mode === 'am' ? '7.100' : mode === 'meshtastic' ? '869.525' : '95.1'}
+                  value={mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : mode === 'meshtastic' ? meshtasticFreq : mode === 'adsb' ? adsbFreq : freq}
+                  onChange={mode === 'nfm' ? changeNfmFreq : mode === 'am' ? changeAmFreq : mode === 'meshtastic' ? changeMeshtasticFreq : mode === 'adsb' ? changeAdsbFreq : changeFreq}
+                  placeholder={mode === 'nfm' ? '145.000' : mode === 'am' ? '7.100' : mode === 'meshtastic' ? '869.525' : mode === 'adsb' ? '1090.000' : '95.1'}
                   inputMode="decimal"
                 />
               </label>
@@ -1236,7 +1269,7 @@ export default function App() {
             </div>
           )}
 
-          {mode !== 'meshtastic' && (
+          {mode !== 'meshtastic' && mode !== 'adsb' && (
             <label>
               Volume
               <input
@@ -1252,7 +1285,28 @@ export default function App() {
         </div>
 
         <div className="col col-center">
-          {mode === 'fm' || mode === 'nfm' || mode === 'am' || mode === 'meshtastic' ? (
+          {mode === 'adsb' ? (
+            <div className="adsb-panel">
+              <div className="adsb-panel-head">
+                <span>ADS-B · {currentFreq} MHz</span>
+                <select value={adsbRange} onChange={(e) => setAdsbRange(Number(e.target.value))}>
+                  <option value={25}>25 km</option>
+                  <option value={50}>50 km</option>
+                  <option value={100}>100 km</option>
+                  <option value={200}>200 km</option>
+                </select>
+              </div>
+              <AdsbMap
+                aircraft={adsbAircraft}
+                homeLat={homeLat}
+                homeLon={homeLon}
+                rangeKm={adsbRange}
+                selected={adsbSelected}
+                onSelect={setAdsbSelected}
+              />
+              <AdsbTable aircraft={adsbAircraft} selected={adsbSelected} onSelect={setAdsbSelected} />
+            </div>
+          ) : mode === 'fm' || mode === 'nfm' || mode === 'am' || mode === 'meshtastic' ? (
             <div className="waterfall-wrap">
               <div className="waterfall-title">
                 {mode === 'meshtastic'
@@ -1363,10 +1417,12 @@ export default function App() {
             </div>
           )}
 
-          <div className="meters">
-            <Meter label="Signal" value={stats.signal} />
-            <Meter label="Audio" value={stats.audio} />
-          </div>
+          {(mode === 'fm' || mode === 'nfm' || mode === 'am' || mode === 'dab') && (
+            <div className="meters">
+              <Meter label="Signal" value={stats.signal} />
+              <Meter label="Audio" value={stats.audio} />
+            </div>
+          )}
         </div>
 
         <div className="col col-right">

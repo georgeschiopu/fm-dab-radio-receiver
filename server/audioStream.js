@@ -5,6 +5,8 @@ import { SpectrumAnalyzer } from './spectrum.js';
 import { DabReceiver, BAND_III } from './dab.js';
 import { MeshtasticReceiver } from './meshtasticReceiver.js';
 import { MESHTASTIC_DEFAULT_FREQ, MESHTASTIC_IF_OFFSET, MESHTASTIC_SAMPLE_RATE } from './meshtastic.js';
+import { AdsbReceiver } from './adsbReceiver.js';
+import { ADSB_DEFAULT_FREQ, ADSB_SAMPLE_RATE } from './adsb.js';
 
 const NFM_SAMPLE_RATE = 1_000_000; // ±0.5 MHz visible span
 const NFM_AUDIO_RATE = 50_000; // integer decimation of 1 MHz; resampled to 48k server-side
@@ -50,6 +52,7 @@ export class AudioStreamManager extends EventEmitter {
     this.rtl = null;
     this.dab = new DabReceiver();
     this.meshtastic = new MeshtasticReceiver();
+    this.adsb = new AdsbReceiver();
     this.mode = 'fm';
     this.decoder = new FmDecoder();
     this.spec = new SpectrumAnalyzer();
@@ -76,6 +79,13 @@ export class AudioStreamManager extends EventEmitter {
       if (this.onPacket) this.onPacket(packet);
     });
     this.meshtastic.on('error', (err) => this.emit('error', err));
+    this.adsbCount = 0;
+    this.adsb.on('aircraft', (aircraft) => {
+      this.adsbCount = aircraft.length;
+      this.emit('aircraft', aircraft);
+    });
+    this.adsb.on('info', (message) => this.emit('info', message));
+    this.adsb.on('error', (err) => this.emit('error', err));
   }
 
   async start({ mode = 'fm', host, port, freq, gain = null, service = null, meshtasticKey = 'default' }) {
@@ -117,6 +127,11 @@ export class AudioStreamManager extends EventEmitter {
     if (mode === 'meshtastic') {
       this.decoder = null;
       this.meshtastic.start({ frequency: freq || MESHTASTIC_DEFAULT_FREQ, key: this.meshtasticKey });
+    } else if (mode === 'adsb') {
+      // ADS-B/Mode S: rtl_tcp IQ is piped straight into dump1090 (2 Msps),
+      // whose decoded aircraft we forward to the client as a map + table.
+      this.decoder = null;
+      this.adsb.start({ frequency: freq || ADSB_DEFAULT_FREQ });
     }
 
     // FM / NFM / AM mode: direct rtl_tcp IQ handled in-process
@@ -145,7 +160,7 @@ export class AudioStreamManager extends EventEmitter {
         agc: true,
         channelCutoff: AM_IF_CUTOFF,
       });
-    } else if (mode !== 'meshtastic') {
+    } else if (mode !== 'meshtastic' && mode !== 'adsb') {
       this.decoder = new FmDecoder();
     }
     if (this.decoder) this.decoder.reset();
@@ -155,14 +170,14 @@ export class AudioStreamManager extends EventEmitter {
     // the FFT so the waterfall stays smooth but costs a fraction of the CPU.
     const nfmAm = mode === 'nfm' || mode === 'am';
     this.spec = new SpectrumAnalyzer({
-      sampleRate: mode === 'meshtastic' ? MESHTASTIC_SAMPLE_RATE : nfmAm ? AM_SAMPLE_RATE : DEFAULT_SAMPLE_RATE,
-      fftEvery: nfmAm || mode === 'meshtastic' ? 4 : 1,
+      sampleRate: mode === 'meshtastic' ? MESHTASTIC_SAMPLE_RATE : mode === 'adsb' ? ADSB_SAMPLE_RATE : nfmAm ? AM_SAMPLE_RATE : DEFAULT_SAMPLE_RATE,
+      fftEvery: nfmAm || mode === 'meshtastic' || mode === 'adsb' ? 4 : 1,
     });
     this.spec.onSpectrum = (line) => {
       if (this.onSpectrum) this.onSpectrum(line);
     };
     this.spec.reset();
-    const rtl = new RtlTcpClient({ host, port, sampleRate: mode === 'nfm' || mode === 'am' || mode === 'meshtastic' ? AM_SAMPLE_RATE : DEFAULT_SAMPLE_RATE });
+    const rtl = new RtlTcpClient({ host, port, sampleRate: mode === 'nfm' || mode === 'am' || mode === 'meshtastic' ? AM_SAMPLE_RATE : mode === 'adsb' ? ADSB_SAMPLE_RATE : DEFAULT_SAMPLE_RATE });
     this.rtl = rtl;
     rtl.on('iq', (chunk) => this._onIq(chunk));
     rtl.on('disconnect', () => {
@@ -218,6 +233,10 @@ export class AudioStreamManager extends EventEmitter {
     if (this.mode === 'meshtastic') {
       this.meshtastic.push(chunk);
       this.spec.push(chunk);
+      return;
+    }
+    if (this.mode === 'adsb') {
+      this.adsb.push(chunk);
       return;
     }
     const pcm = this.decoder.process(chunk);
@@ -638,6 +657,13 @@ export class AudioStreamManager extends EventEmitter {
         this.emit('status', this.status());
         return;
       }
+      if (this.mode === 'adsb') {
+        this.adsb.setFrequency(freq);
+        this.rtl.tune(freq);
+        this.captureCenter = freq;
+        this.emit('status', this.status());
+        return;
+      }
       const rate = this.decoder ? this.decoder.inRate : DEFAULT_SAMPLE_RATE;
       const maxOff = Math.floor(rate / 2 * 0.8);
       const off = this.captureCenter != null ? freq - this.captureCenter : 0;
@@ -667,6 +693,7 @@ export class AudioStreamManager extends EventEmitter {
       this.rtl = null;
     }
     this.meshtastic.stop();
+    this.adsb.stop();
     this.dab.stop();
     this.emit('status', this.status());
   }
@@ -691,6 +718,7 @@ export class AudioStreamManager extends EventEmitter {
       center: this.mode === 'dab' ? null : this.captureCenter,
       squelch: this.mode === 'nfm' ? this.squelch : 0,
       meshtasticPackets: this.mode === 'meshtastic' ? this.meshtasticPackets : 0,
+      adsbCount: this.mode === 'adsb' ? this.adsbCount : 0,
       scanning: this.scanning,
       signal: this.stats.signal,
       audio: this.stats.audio,
