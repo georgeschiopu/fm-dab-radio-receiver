@@ -10,6 +10,7 @@ The Node.js backend demodulates FM/NFM/AM IQ samples in-process and decodes DAB 
 - **NFM mode** — narrowband FM for amateur bands: 1 MS/s rtl_tcp so the **±0.5 MHz waterfall** (centered on the tuned frequency) shows adjacent activity. In-process NFM demod (4 kHz voice bandwidth) with **AGC** for a steady level and a manual **Squelch** slider (off by default, NFM-only) that mutes the noise floor when no carrier is locked.
 - **AM mode** — amplitude modulation for HF voice bands (e.g. 40 m, via a 125 MHz upconverter): the same 1 MS/s **±0.5 MHz waterfall** as NFM, in-process envelope-detector demod (5 kHz audio bandwidth) with **AGC** so strong and weak stations play at a steady level. Tune to `f + 125 MHz` (upconverter LO) when using a Ham It Up-style converter.
 - **Meshtastic mode** — EU868 LoRa packet demodulation at 869.525 MHz using `lorarx`, with text messages, node positions, and device/environment telemetry. The built-in default key and encrypted per-account custom PSKs are supported.
+- **ADS-B mode** — 1090 MHz ADS-B / Mode S decoding via `dump1090` (fed from the same rtl_tcp IQ stream). Detected aircraft are shown on an offline radar map (range rings around an optional `HOME_LAT`/`HOME_LON` centre) plus a live table of ICAO, callsign, altitude, speed, track, and squawk. Positions come from dump1090's own CPR decoder; aircraft not heard for 60 s are dropped.
 - **DAB mode** — full ETI decode chain (`eti-cmdline-rtl_tcp` → `dablin`) producing 48 kHz audio; live ensemble name, playing service and SNR on a DAB channel selector (5A–13F), plus a **Station dropdown** to pick a specific service from the tuned ensemble (or "first station found").
 - **Presets** — save/load stations in the browser (localStorage), kept **separately per mode**. DAB presets remember both the channel and the selected station, so clicking one tunes the ensemble and plays that service (`dablin -l`). FM/NFM/AM presets show a station logo when available: the backend lazily looks each saved station up in the free [radio-browser.info](https://www.radio-browser.info) community database (by name + frequency, GB-first), downloads the favicon to `server/logos/fm/`, and caches the result. No API key needed; downloaded logos are gitignored.
 - **Remote SDR** — works with any `rtl_tcp` server on your network (or localhost).
@@ -56,6 +57,10 @@ All options are environment variables (see `docker-compose.yml`):
 | `RTL_TCP_NFM_FREQ` | `145.0e6`    | Initial NFM frequency (Hz)                              |
 | `RTL_TCP_AM_FREQ`  | `7.1e6`      | Initial AM frequency (Hz)                               |
 | `RTL_TCP_MESHTASTIC_FREQ` | `869.525e6` | Initial EU868 Meshtastic frequency (Hz)            |
+| `RTL_TCP_ADSB_FREQ` | `1090e6`    | Initial ADS-B frequency (Hz)                        |
+| `HOME_LAT` / `HOME_LON` | _(unset)_ | Fixed radar-map centre for ADS-B (decimal degrees); if unset the map tracks the heard fleet centroid |
+| `ADSB_SBS_PORT` | `10001`    | Local TCP port dump1090 emits SBS-1 aircraft on    |
+| `ADSB_BIN` | `dump1090` | Override the dump1090 binary path                  |
 | `PORT`             | `8080`       | Web UI port                                             |
 
 Example with a DAB default:
@@ -109,7 +114,7 @@ Runs offline unit tests against a fake rtl_tcp server (protocol + FM/NFM/AM demo
 
 ### WebSocket protocol
 
-- Text `status` messages carry `mode`, `connected`, `freq`, `signal`, `audio`, `squelch`, and DAB fields (`channel`, `service`, `ensemble`, `snr`). Meshtastic packets use `{type: "meshtastic", packet}` messages.
+- Text `status` messages carry `mode`, `connected`, `freq`, `signal`, `audio`, `squelch`, and DAB fields (`channel`, `service`, `ensemble`, `snr`). Meshtastic packets use `{type: "meshtastic", packet}` messages; ADS-B aircraft use `{type: "adsb", aircraft: [...]}`, where each aircraft has `icao`, optional `callsign`/`altitude`/`speed`/`track`/`lat`/`lon`/`verticalRate`/`squawk`/`alert`/`emergency` and an `age` (seconds since last message).
 - Client → server text ops: `tune` (mode, frequency, gain, optional DAB `service` and NFM `squelch`), `gain`, `squelch`, `meshtasticKey`, `stop`.
 - Binary frames: `0x01` = PCM int16 LE (mono 48 kHz), `0x02` = spectrum dB line (`uint16 LE` length prefix).
 
@@ -122,6 +127,8 @@ server/
   dab.js          DAB pipeline: eti-cmdline-rtl_tcp | dablin, channel map
   meshtastic.js   LoRa packet parsing, decryption, and Meshtastic protobuf fields
   meshtasticReceiver.js  lorarx child-process stream adapter
+  adsb.js         SBS-1 BaseStation parsing and rolling aircraft tracker
+  adsbReceiver.js dump1090 child-process stream adapter (reads rtl_tcp IQ, SBS-1 out)
   userSettings.js account-scoped encrypted Meshtastic key settings
   dsp.js          FM/NFM/AM demodulators (AGC, squelch, 50k->48k resampler)
   rtlTcp.js       rtl_tcp client (single-instance, exclusive connection)

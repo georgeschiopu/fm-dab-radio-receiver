@@ -15,6 +15,10 @@ services:
       - RTL_TCP_MODE=fm
       - RTL_TCP_DAB_FREQ=216.928e6
       - RTL_TCP_MESHTASTIC_FREQ=869.525e6
+      - RTL_TCP_ADSB_FREQ=1090e6
+      # Optional fixed radar centre for the ADS-B map (decimal degrees).
+      - HOME_LAT=53.410158
+      - HOME_LON=-2.5738129
       # Saved stations live in this file (survives container rebuilds via volume).
       - PRESETS_FILE=/data/presets.json
       - USERS_FILE=/data/users.json

@@ -8,6 +8,7 @@ import { SpectrumAnalyzer, DEFAULT_BINS } from './spectrum.js';
 import { channelBlockForFreq, channelFreqKHz, DabReceiver } from './dab.js';
 import { AudioStreamManager, scanThresholdFor } from './audioStream.js';
 import { parseMeshtasticPacket, resolveMeshtasticKey } from './meshtastic.js';
+import { parseSbsLine, AdsbTracker } from './adsb.js';
 import { imageSizeOfFile } from './fmLogos.js';
 import {
   getPresets,
@@ -1201,5 +1202,48 @@ describe('DAB scanner', () => {
     const ch8b = done.channels.find((c) => c.channel === '8B');
     expect(ch8b).toBeTruthy();
     expect(ch8b.services.length).toBe(3);
+  });
+});
+
+describe('ADS-B SBS-1 parsing', () => {
+  it('parses a callsign (MSG,1) and keeps it on later updates', () => {
+    const tracker = new AdsbTracker();
+    tracker.update(parseSbsLine('MSG,1,1,1,abc123,11111,111,111,111,111,EZY123,0'));
+    tracker.update(parseSbsLine('MSG,3,1,1,abc123,111,111,111,,,,37000,,,51.47,-0.45,,,,'));
+    const [a] = tracker.snapshot();
+    expect(a.icao).toBe('abc123');
+    expect(a.callsign).toBe('EZY123');
+    expect(a.altitude).toBe(37000);
+    expect(a.lat).toBeCloseTo(51.47);
+    expect(a.lon).toBeCloseTo(-0.45);
+  });
+
+  it('parses airborne velocity (MSG,4) for speed and track', () => {
+    const u = parseSbsLine('MSG,4,1,1,def456,111,111,111,,,,,450,275,,1200,0,0,0');
+    expect(u.speed).toBe(450);
+    expect(u.track).toBe(275);
+    expect(u.icao).toBe('def456');
+  });
+
+  it('ignores non-MSG and malformed lines', () => {
+    expect(parseSbsLine('AIR,1,2,3')).toBeNull();
+    expect(parseSbsLine('MSG,3,1,1,badhex,111,111,111,,37000,,,51.47,-0.45,,,,0,0')).toBeNull();
+    expect(parseSbsLine('')).toBeNull();
+  });
+
+  it('expires aircraft not heard within the TTL', async () => {
+    const tracker = new AdsbTracker(50);
+    tracker.update(parseSbsLine('MSG,1,1,1,aaa111,111,111,111,111,111,BBA111,0'));
+    expect(tracker.count()).toBe(1);
+    await new Promise((r) => setTimeout(r, 70));
+    tracker.update(parseSbsLine('MSG,1,1,1,bbb222,111,111,111,111,111,BBB222,0'));
+    expect(tracker.snapshot().find((a) => a.icao === 'aaa111')).toBeUndefined();
+    expect(tracker.count()).toBe(1);
+  });
+
+  it('flags emergency/squawk fields', () => {
+    const u = parseSbsLine('MSG,3,1,1,ccc333,111,111,111,,,,,,,51.5,-0.5,,7700,0,1');
+    expect(u.squawk).toBe('7700');
+    expect(u.emergency).toBe(true);
   });
 });
