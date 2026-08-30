@@ -961,44 +961,19 @@ export default function App() {
         </div>
       </div>
 
-      <div className="mode-toggle">
-        <button
-          className={mode === 'fm' ? 'active' : ''}
-          onClick={() => changeMode('fm')}
-        >
-          FM
-        </button>
-        <button
-          className={mode === 'nfm' ? 'active' : ''}
-          onClick={() => changeMode('nfm')}
-        >
-          NFM
-        </button>
-        <button
-          className={mode === 'am' ? 'active' : ''}
-          onClick={() => changeMode('am')}
-        >
-          AM
-        </button>
-        <button
-          className={mode === 'dab' ? 'active' : ''}
-          onClick={() => changeMode('dab')}
-        >
-          DAB
-        </button>
-        <button
-          className={mode === 'meshtastic' ? 'active' : ''}
-          onClick={() => changeMode('meshtastic')}
-        >
-          Meshtastic
-        </button>
-        <button
-          className={mode === 'adsb' ? 'active' : ''}
-          onClick={() => changeMode('adsb')}
-        >
-          ADS-B
-        </button>
-      </div>
+      <select
+        className="mode-select"
+        aria-label="Receiver mode"
+        value={mode}
+        onChange={(e) => changeMode(e.target.value)}
+      >
+        <option value="fm">FM</option>
+        <option value="nfm">NFM</option>
+        <option value="am">AM</option>
+        <option value="dab">DAB</option>
+        <option value="meshtastic">Meshtastic</option>
+        <option value="adsb">ADS-B</option>
+      </select>
 
       <div className="columns">
         <div className="col col-left">
@@ -1426,6 +1401,7 @@ export default function App() {
         </div>
 
         <div className="col col-right">
+          {mode !== 'adsb' && (
           <div className="stations">
             <div className="stations-title">{mode === 'dab' ? 'Favourites' : 'Stations'}</div>
             {presets.length === 0 && (
@@ -1468,6 +1444,7 @@ export default function App() {
               </div>
             )}
           </div>
+          )}
         </div>
       </div>
 

@@ -71,21 +71,10 @@ h1 {
   color: #58a6ff;
 }
 
-.mode-toggle {
-  display: flex;
-  gap: 6px;
-}
-
-.mode-toggle button {
-  flex: 1;
-  padding: 8px;
-  font-size: 13px;
-}
-
-.mode-toggle button.active {
-  background: #1f6feb;
-  border-color: #388bfd;
-  color: #fff;
+.mode-select {
+  width: 100%;
+  margin-bottom: 10px;
+  font-weight: 600;
 }
 
 select {
@@ -1054,6 +1043,11 @@ button:disabled {
 .adsb-tip {
   font-family: inherit;
   font-size: 11px;
+}
+
+.adsb-plane-slot {
+  background: transparent;
+  border: none;
 }
 
 .adsb-map-hint {
