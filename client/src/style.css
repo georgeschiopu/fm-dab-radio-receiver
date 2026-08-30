@@ -1107,6 +1107,22 @@ button:disabled {
   color: #ff5252;
 }
 
+.adsb-link {
+  color: #58a6ff;
+  text-decoration: none;
+}
+
+.adsb-link:hover {
+  text-decoration: underline;
+}
+
+.adsb-flag {
+  font-size: 16px;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+}
+
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
