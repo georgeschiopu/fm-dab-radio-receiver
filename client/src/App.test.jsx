@@ -109,7 +109,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByText('Stations');
 
-    await user.click(screen.getByRole('button', { name: 'NFM' }));
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'nfm');
     await screen.findByText('NFM band scan');
 
     await user.click(screen.getByRole('button', { name: 'Scan NFM band' }));
@@ -150,7 +150,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByText('Stations');
 
-    await user.click(screen.getByRole('button', { name: 'DAB' }));
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'dab');
     await screen.findByText('DAB band scan');
 
     await user.click(screen.getByRole('button', { name: 'Scan DAB band' }));
@@ -205,7 +205,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByText('Stations');
 
-    await user.click(screen.getByRole('button', { name: 'DAB' }));
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'dab');
     await screen.findByText('DAB band scan');
 
     // First scan completes with results
@@ -247,7 +247,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByText('Stations');
 
-    await user.click(screen.getByRole('button', { name: 'DAB' }));
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'dab');
     await screen.findByText('DAB band scan');
 
     await user.click(screen.getByRole('button', { name: 'Scan DAB band' }));
@@ -289,7 +289,7 @@ describe('App', () => {
     // First session: run a scan that completes with results, which get saved.
     const first = render(<App />);
     await screen.findByText('Stations');
-    await user.click(screen.getByRole('button', { name: 'DAB' }));
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'dab');
     await screen.findByText('DAB band scan');
     await user.click(screen.getByRole('button', { name: 'Scan DAB band' }));
     const ws = MockWebSocket.instances[0];
@@ -311,7 +311,7 @@ describe('App', () => {
     // "Refresh": re-mount with the same user; the saved results come back.
     render(<App />);
     await screen.findByText('Stations');
-    await user.click(screen.getByRole('button', { name: 'DAB' }));
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'dab');
     await screen.findByText('1 stations found');
     expect(screen.getByText('BBC Radio 3')).toBeInTheDocument();
   });
