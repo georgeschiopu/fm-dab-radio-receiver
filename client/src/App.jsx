@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AudioPlayer } from './audio.js';
 import SpectrumAnalyzer from './SpectrumAnalyzer.jsx';
 import Waterfall from './Waterfall.jsx';
 import AdsbMap from './AdsbMap.jsx';
 import AdsbTable from './AdsbTable.jsx';
+import { getAircraftPosition, getCachedPosition } from './adsbEnrich.js';
 
 // Presets are stored per mode and per user so FM / NFM station lists stay separate.
 const presetKey = (user, m) => `sdr-${user}-${m}-stations`;
@@ -64,6 +65,33 @@ export default function App() {
   const [adsbAircraft, setAdsbAircraft] = useState([]);
   const [adsbSelected, setAdsbSelected] = useState(null);
   const [adsbRange, setAdsbRange] = useState(100);
+  const [posOverrides, setPosOverrides] = useState({});
+
+  // Fill positions our receiver hasn't decoded yet (e.g. far/weak aircraft)
+  // from the crowdsourced OpenSky network, so the table/map have no gaps.
+  useEffect(() => {
+    for (const a of adsbAircraft) {
+      if (a.lat != null && a.lon != null) continue;
+      if (getCachedPosition(a.icao) !== undefined) continue;
+      getAircraftPosition(a.icao).then((pos) => {
+        setPosOverrides((prev) => ({ ...prev, [a.icao]: pos }));
+      });
+    }
+  }, [adsbAircraft]);
+
+  // Prefer our own position; only fill lat/lon (and onGround) when missing.
+  const displayAircraft = useMemo(
+    () =>
+      adsbAircraft.map((a) => {
+        if (a.lat != null && a.lon != null) return a;
+        const o = posOverrides[a.icao];
+        if (o && o.lat != null && o.lon != null) {
+          return { ...a, lat: o.lat, lon: o.lon, onGround: a.onGround ?? o.onGround };
+        }
+        return a;
+      }),
+    [adsbAircraft, posOverrides]
+  );
   const [homeLat, setHomeLat] = useState(null);
   const [homeLon, setHomeLon] = useState(null);
   const [dabFreq, setDabFreq] = useState('216.928');
@@ -1272,14 +1300,14 @@ export default function App() {
                 </select>
               </div>
               <AdsbMap
-                aircraft={adsbAircraft}
+                aircraft={displayAircraft}
                 homeLat={homeLat}
                 homeLon={homeLon}
                 rangeKm={adsbRange}
                 selected={adsbSelected}
                 onSelect={setAdsbSelected}
               />
-              <AdsbTable aircraft={adsbAircraft} selected={adsbSelected} onSelect={setAdsbSelected} />
+              <AdsbTable aircraft={displayAircraft} selected={adsbSelected} onSelect={setAdsbSelected} />
             </div>
           ) : mode === 'fm' || mode === 'nfm' || mode === 'am' || mode === 'meshtastic' ? (
             <div className="waterfall-wrap">

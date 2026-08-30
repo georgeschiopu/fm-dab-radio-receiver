@@ -9,7 +9,7 @@
 
 export const ADSB_DEFAULT_FREQ = 1_090_000_000;
 export const ADSB_SAMPLE_RATE = 2_000_000;
-export const ADSB_TTL_MS = 60_000; // drop aircraft not heard for this long
+export const ADSB_TTL_MS = 600_000; // drop aircraft not heard for this long (10 min)
 
 // SBS-1 `MSG` line field indexes (0-based) once split on commas.
 const F = {
@@ -25,6 +25,8 @@ const F = {
   squawk: 17,
   alert: 18,
   emergency: 19,
+  spi: 20,
+  onGround: 21,
 };
 
 function num(value) {
@@ -81,6 +83,11 @@ export function parseSbsLine(line) {
   if (alert === '1') update.alert = true;
   const emergency = (parts[F.emergency] || '').trim();
   if (emergency === '1') update.emergency = true;
+  const spi = (parts[F.spi] || '').trim();
+  if (spi === '1') update.spi = true;
+  const onGround = (parts[F.onGround] || '').trim();
+  if (onGround === '1') update.onGround = true;
+  else if (onGround === '0') update.onGround = false;
   return update;
 }
 
@@ -96,7 +103,7 @@ export class AdsbTracker {
   update(partial) {
     if (!partial || !partial.icao) return null;
     const now = Date.now();
-    const prev = this.aircraft.get(partial.icao) || { icao: partial.icao, seen: now };
+    const prev = this.aircraft.get(partial.icao) || { icao: partial.icao, added: now, seen: now };
     const next = { ...prev, ...partial, seen: now };
     this.aircraft.set(partial.icao, next);
     return next;
@@ -114,8 +121,12 @@ export class AdsbTracker {
     this.prune(now);
     const out = [];
     for (const a of this.aircraft.values()) {
-      const { seen, ...rest } = a;
-      out.push({ ...rest, age: Math.round((now - seen) / 1000) });
+      const { seen, added, ...rest } = a;
+      out.push({
+        ...rest,
+        age: Math.round((now - seen) / 1000),
+        addedAge: Math.round((now - added) / 1000),
+      });
     }
     out.sort((x, y) => (x.icao < y.icao ? -1 : x.icao > y.icao ? 1 : 0));
     return out;

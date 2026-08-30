@@ -1210,12 +1210,18 @@ describe('ADS-B SBS-1 parsing', () => {
     const tracker = new AdsbTracker();
     tracker.update(parseSbsLine('MSG,1,1,1,abc123,11111,111,111,111,111,EZY123,0'));
     tracker.update(parseSbsLine('MSG,3,1,1,abc123,111,111,111,,,,37000,,,51.47,-0.45,,,,'));
-    const [a] = tracker.snapshot();
+    const snap = tracker.snapshot();
+    const [a] = snap;
     expect(a.icao).toBe('abc123');
     expect(a.callsign).toBe('EZY123');
     expect(a.altitude).toBe(37000);
     expect(a.lat).toBeCloseTo(51.47);
     expect(a.lon).toBeCloseTo(-0.45);
+    expect(typeof a.age).toBe('number');
+    expect(typeof a.addedAge).toBe('number');
+    // Snapshot exposes no internal timestamps.
+    expect(snap[0]).not.toHaveProperty('seen');
+    expect(snap[0]).not.toHaveProperty('added');
   });
 
   it('parses airborne velocity (MSG,4) for speed and track', () => {
@@ -1245,5 +1251,21 @@ describe('ADS-B SBS-1 parsing', () => {
     const u = parseSbsLine('MSG,3,1,1,ccc333,111,111,111,,,,,,,51.5,-0.5,,7700,0,1');
     expect(u.squawk).toBe('7700');
     expect(u.emergency).toBe(true);
+  });
+
+  it('parses SPI (ident) and on-ground flags', () => {
+    const u = parseSbsLine('MSG,3,1,1,def456,111,111,111,111,111,,37000,,,51.5,-0.5,-800,1200,0,1,0,1');
+    expect(u.altitude).toBe(37000);
+    expect(u.lat).toBe(51.5);
+    expect(u.verticalRate).toBe(-800);
+    expect(u.squawk).toBe('1200');
+    expect(u.alert).toBeUndefined();
+    expect(u.emergency).toBe(true);
+    expect(u.spi).toBeUndefined();
+    expect(u.onGround).toBe(true);
+
+    const g = parseSbsLine('MSG,3,1,1,def456,111,111,111,111,111,,1000,,,52.0,-1.0,0,,0,0,1,0');
+    expect(g.spi).toBe(true);
+    expect(g.onGround).toBe(false);
   });
 });

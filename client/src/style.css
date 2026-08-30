@@ -1107,6 +1107,19 @@ button:disabled {
   color: #ff5252;
 }
 
+.adsb-sort {
+  cursor: pointer;
+  user-select: none;
+}
+
+.adsb-sort:hover {
+  color: #e6edf3;
+}
+
+.adsb-sort.active {
+  color: #58a6ff;
+}
+
 .adsb-link {
   color: #58a6ff;
   text-decoration: none;
@@ -1121,6 +1134,28 @@ button:disabled {
   line-height: 1;
   text-align: center;
   white-space: nowrap;
+}
+
+.adsb-photo {
+  display: block;
+  width: 44px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid #30363d;
+}
+
+.adsb-air {
+  text-align: center;
+  font-weight: 700;
+}
+
+.adsb-air.air {
+  color: #3fb950;
+}
+
+.adsb-air.ground {
+  color: #f85149;
 }
 
 .mono {
