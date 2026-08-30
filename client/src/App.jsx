@@ -1400,10 +1400,10 @@ export default function App() {
           )}
         </div>
 
-        <div className="col col-right">
-          {mode !== 'adsb' && (
-          <div className="stations">
-            <div className="stations-title">{mode === 'dab' ? 'Favourites' : 'Stations'}</div>
+        {mode !== 'adsb' && (
+          <div className="col col-right">
+            <div className="stations">
+              <div className="stations-title">{mode === 'dab' ? 'Favourites' : 'Stations'}</div>
             {presets.length === 0 && (
               <div className="stations-empty">
                 {mode === 'dab'
@@ -1443,9 +1443,9 @@ export default function App() {
                 <button onClick={addPreset}>Save current</button>
               </div>
             )}
+            </div>
           </div>
-          )}
-        </div>
+        )}
       </div>
 
       <div className={`status ${status.startsWith('Error') ? 'error' : ''}`}>{status}</div>
