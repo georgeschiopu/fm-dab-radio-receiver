@@ -877,23 +877,16 @@ export default function App() {
 
   const dabChannel = mode === 'dab' ? dabChannelForMhz(parseFloat(dabFreq) || 216.928)[0] : null;
 
-  // Fine-tune knob (NFM/AM): a native non-passive wheel listener so
-  // preventDefault stops the page scrolling while tuning. Each ~100 wheel
-  // units is one notch that steps the frequency by `tuneStep` Hz and turns
-  // the knob by KNOB_DEG degrees.
+  // Fine-tune knob (NFM/HF). A USB tuning knob usually presents itself as a
+  // scroll wheel or arrow keys, so the tuning listeners are attached to the
+  // window (not just the on-screen knob) to let the hardware knob tune no
+  // matter where the cursor sits in the kiosk. Each ~100 wheel units is one
+  // notch that steps the frequency by `tuneStep` Hz and turns the on-screen
+  // knob by KNOB_DEG degrees. In non-NFM/HF modes the wheel is left alone so
+  // the page/panels still scroll normally.
   const KNOB_DEG = 9;
   useEffect(() => {
-    const el = knobRef.current;
-    if (!el) return;
-    const onWheel = (e) => {
-      e.preventDefault();
-      let d = e.deltaY;
-      if (e.deltaMode === 1) d *= 16; // line-based wheels
-      else if (e.deltaMode === 2) d *= 100; // page-based wheels
-      wheelAccRef.current += d;
-      const ticks = Math.trunc(wheelAccRef.current / 100);
-      if (ticks === 0) return;
-      wheelAccRef.current -= ticks * 100;
+    const handleTune = (ticks) => {
       const { mode: m, tuneStep: step, nfmFreq: nf, hfFreq: hf } = fineRef.current;
       const cur = m === 'nfm' ? nf : m === 'am' ? hf : null;
       if (cur === null) return;
@@ -911,9 +904,51 @@ export default function App() {
       }
       setKnobAngle((a) => (((a - ticks * KNOB_DEG) % 360) + 360) % 360);
     };
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, [mode]);
+
+    const tunable = () => {
+      const { mode: m } = fineRef.current;
+      return m === 'nfm' || m === 'am';
+    };
+    // Don't hijack scrolling inside panels that can actually scroll (e.g. the
+    // saved-stations list) — only consume the wheel for tuning elsewhere.
+    const inScrollable = (el) => {
+      let n = el;
+      while (n && n !== document.body) {
+        if (n.scrollHeight > n.clientHeight + 1) return true;
+        n = n.parentElement;
+      }
+      return false;
+    };
+    const onWheel = (e) => {
+      if (!tunable() || inScrollable(e.target)) return;
+      e.preventDefault();
+      let d = e.deltaY;
+      if (e.deltaMode === 1) d *= 16; // line-based wheels
+      else if (e.deltaMode === 2) d *= 100; // page-based wheels
+      wheelAccRef.current += d;
+      const ticks = Math.trunc(wheelAccRef.current / 100);
+      if (ticks === 0) return;
+      wheelAccRef.current -= ticks * 100;
+      handleTune(ticks);
+    };
+    const onKey = (e) => {
+      const tag = e.target && e.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (!tunable()) return;
+      let sign = 0;
+      if (e.key === 'ArrowUp' || e.key === 'ArrowRight' || e.key === 'PageUp') sign = -1;
+      else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'PageDown') sign = 1;
+      if (!sign) return;
+      e.preventDefault();
+      handleTune(sign);
+    };
+    window.addEventListener('wheel', onWheel, { passive: false });
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('wheel', onWheel, { passive: false });
+      window.removeEventListener('keydown', onKey);
+    };
+  }, []);
 
   const freqMatch = (a, b) => {
     const fa = parseFloat(a);
