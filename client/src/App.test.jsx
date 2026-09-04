@@ -144,6 +144,32 @@ describe('App', () => {
     expect(freqInput.value).toBe('99.9');
   });
 
+  it('tunes the HF frequency with a USB-knob scroll wheel', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', authenticatedFetch());
+    render(<App />);
+    await screen.findByText('Stations');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'am');
+
+    const input = await screen.findByLabelText('Frequency (MHz)');
+    expect(input.value).toBe('7.100');
+    window.dispatchEvent(new WheelEvent('wheel', { deltaY: 100, bubbles: true }));
+    await waitFor(() => expect(input.value).toBe('7.0000'));
+  });
+
+  it('tunes the HF frequency with arrow keys from a USB knob', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', authenticatedFetch());
+    render(<App />);
+    await screen.findByText('Stations');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'am');
+
+    const input = await screen.findByLabelText('Frequency (MHz)');
+    expect(input.value).toBe('7.100');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    await waitFor(() => expect(input.value).toBe('7.2000'));
+  });
+
   it('stars an individual DAB scan station into favourites and unstars it', async () => {
     const user = userEvent.setup();
     vi.stubGlobal('fetch', authenticatedFetch());

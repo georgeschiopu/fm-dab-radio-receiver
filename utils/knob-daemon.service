@@ -1,0 +1,11 @@
+[Unit]
+Description=USB volume knob -> tuning knob daemon
+After=multi-user.target
+
+[Service]
+ExecStart=/usr/local/bin/knob_daemon.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
