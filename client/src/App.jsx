@@ -1369,9 +1369,6 @@ export default function App() {
                     style={{ left: mode === 'nfm' || mode === 'am' ? '50%' : `${tunePct}%` }}
                   />
                 )}
-                {mode === 'am' && demod === 'cw' && cwText && (
-                  <div className="cw-overlay">{cwText}</div>
-                )}
               </div>
               <div className="waterfall-axis">
                 {mode === 'nfm' || mode === 'am' || mode === 'meshtastic' ? (
@@ -1456,6 +1453,13 @@ export default function App() {
             <div className="meters">
               <Meter label="Signal" value={stats.signal} />
               <Meter label="Audio" value={stats.audio} />
+            </div>
+          )}
+
+          {mode === 'am' && demod === 'cw' && cwText && (
+            <div className="cw-panel">
+              <div className="cw-panel-title">CW decoded</div>
+              <div className="cw-panel-text">{cwText}</div>
             </div>
           )}
         </div>
