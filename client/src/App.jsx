@@ -59,7 +59,8 @@ export default function App() {
   const [mode, setMode] = useState('fm');
   const [freq, setFreq] = useState('');
   const [nfmFreq, setNfmFreq] = useState('145.000');
-  const [amFreq, setAmFreq] = useState('7.100');
+  const [hfFreq, setHfFreq] = useState('7.100');
+  const [demod, setDemod] = useState('am');
   const [meshtasticFreq, setMeshtasticFreq] = useState(MESHTASTIC_DEFAULT_FREQ.toFixed(3));
   const [adsbFreq, setAdsbFreq] = useState('1090.000');
   const [adsbAircraft, setAdsbAircraft] = useState([]);
@@ -138,6 +139,7 @@ export default function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [tuneStep, setTuneStep] = useState(100_000);
   const [knobAngle, setKnobAngle] = useState(0);
+  const [cwText, setCwText] = useState('');
 
   const wsRef = useRef(null);
   const playerRef = useRef(null);
@@ -147,8 +149,8 @@ export default function App() {
   const knobRef = useRef(null);
   const wheelAccRef = useRef(0);
   const tuneFreqRef = useRef(null);
-  const fineRef = useRef({ mode: 'fm', tuneStep: 100_000, nfmFreq: '145.000', amFreq: '7.100' });
-  fineRef.current = { mode, tuneStep, nfmFreq, amFreq };
+  const fineRef = useRef({ mode: 'fm', tuneStep: 100_000, nfmFreq: '145.000', hfFreq: '7.100' });
+  fineRef.current = { mode, tuneStep, nfmFreq, hfFreq };
   const tuneScanHitRef = useRef(null);
 
   const loadPresets = (m) => {
@@ -198,7 +200,7 @@ export default function App() {
         if (cfg.mode) setMode(cfg.mode);
         if (cfg.dabFreq) setDabFreq((cfg.dabFreq / 1e6).toFixed(3));
         if (cfg.nfmFreq) setNfmFreq((cfg.nfmFreq / 1e6).toFixed(3));
-        if (cfg.amFreq) setAmFreq((cfg.amFreq / 1e6).toFixed(3));
+        if (cfg.amFreq) setHfFreq((cfg.amFreq / 1e6).toFixed(3));
         if (cfg.meshtasticFreq) setMeshtasticFreq((cfg.meshtasticFreq / 1e6).toFixed(3));
         if (cfg.adsbFreq) setAdsbFreq((cfg.adsbFreq / 1e6).toFixed(3));
         if (cfg.homeLat != null) setHomeLat(cfg.homeLat);
@@ -217,7 +219,7 @@ export default function App() {
         setGain('40');
         setDabFreq('216.928');
         setNfmFreq('145.000');
-        setAmFreq('7.100');
+        setHfFreq('7.100');
         setMeshtasticFreq(MESHTASTIC_DEFAULT_FREQ.toFixed(3));
         setMode('fm');
         loadPresets('fm');
@@ -360,6 +362,7 @@ export default function App() {
         if (typeof ev.data === 'string') {
           const msg = JSON.parse(ev.data);
            if (msg.type === 'status') {
+             if (msg.demod === 'am' || msg.demod === 'usb' || msg.demod === 'lsb' || msg.demod === 'cw') setDemod(msg.demod);
              if (msg.mode === 'meshtastic') {
                setStatus(msg.connected ? `Meshtastic · ${msg.meshtasticPackets || 0} packets` : 'Tuning Meshtastic…');
                if (msg.connected) {
@@ -413,6 +416,8 @@ export default function App() {
             } else if (msg.type === 'adsb') {
               setAdsbAircraft(msg.aircraft || []);
               setStatus(`ADS-B · ${(msg.aircraft || []).length} aircraft`);
+            } else if (msg.type === 'cw') {
+              setCwText(msg.text || '');
             } else if (msg.type === 'info') {
              setStatus(msg.message);
           } else if (msg.type === 'slide') {
@@ -660,7 +665,7 @@ export default function App() {
     continueScan();
   };
 
-  const play = async (freqOverride, modeOverride, serviceOverride) => {
+  const play = async (freqOverride, modeOverride, serviceOverride, demodOverride) => {
     if (busy) return;
     if (scanning) {
       setScanning(false);
@@ -669,7 +674,8 @@ export default function App() {
     setBusy(true);
     try {
       const m = modeOverride || mode;
-       const target = freqOverride ?? (m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : m === 'am' ? amFreq : m === 'meshtastic' ? meshtasticFreq : m === 'adsb' ? adsbFreq : freq);
+      const dem = m === 'am' ? demodOverride || demod : 'am';
+       const target = freqOverride ?? (m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : m === 'am' ? hfFreq : m === 'meshtastic' ? meshtasticFreq : m === 'adsb' ? adsbFreq : freq);
        const player = m === 'meshtastic' || m === 'adsb' ? null : await ensurePlayer();
        if (player) player.setVolume(volume);
       let ws = wsRef.current;
@@ -686,6 +692,7 @@ export default function App() {
         gain: gain.trim() === '' ? undefined : Number(gain),
         service: m === 'dab' ? dabServiceNow || undefined : undefined,
         squelch: m === 'nfm' ? squelch : 0,
+        demod: dem,
       });
        if (player) player.start();
       playingRef.current = true;
@@ -695,6 +702,7 @@ export default function App() {
        setDabSlide(null);
        if (m === 'meshtastic') setMeshtasticPackets([]);
        if (m === 'adsb') setAdsbAircraft([]);
+       if (m === 'am') setCwText('');
       if (m === 'dab') setDabServices([]);
       if (spectrumRef.current) spectrumRef.current.clear();
     } catch (err) {
@@ -718,7 +726,7 @@ export default function App() {
     if (spectrumRef.current) spectrumRef.current.clear();
   };
 
-  const tuneFreq = (mhz, m, service, { clear = true } = {}) => {
+  const tuneFreq = (mhz, m, service, { clear = true, demod: demodOverride } = {}) => {
     const m2 = m || mode;
     send({
       op: 'tune',
@@ -726,6 +734,7 @@ export default function App() {
       freq: Math.round(parseFloat(mhz) * 1e6),
       service: service || undefined,
       squelch: m2 === 'nfm' ? squelch : 0,
+      demod: m2 === 'am' ? demodOverride || demod : 'am',
     });
     if (m2 === 'dab') {
       setDabInfo(null);
@@ -735,6 +744,7 @@ export default function App() {
       // clear:false so the display keeps scrolling instead of restarting.
       if (spectrumRef.current) spectrumRef.current.clear();
     }
+    if (m2 === 'am') setCwText('');
   };
   tuneFreqRef.current = tuneFreq;
 
@@ -768,8 +778,10 @@ export default function App() {
     setScanFound(null);
     setMode(m);
     loadPresets(m);
+    setCwText('');
+    if (m === 'am') setDemod('am'); // HF defaults to the AM demodulator
     if (playingRef.current) {
-      tuneFreq(m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : m === 'am' ? amFreq : m === 'meshtastic' ? meshtasticFreq : m === 'adsb' ? adsbFreq : freq, m, m === 'dab' ? dabService : undefined);
+      tuneFreq(m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : m === 'am' ? hfFreq : m === 'meshtastic' ? meshtasticFreq : m === 'adsb' ? adsbFreq : freq, m, m === 'dab' ? dabService : undefined);
     }
   };
 
@@ -778,9 +790,15 @@ export default function App() {
     if (playingRef.current && mode === 'nfm') tuneFreq(e.target.value, 'nfm');
   };
 
-  const changeAmFreq = (e) => {
-    setAmFreq(e.target.value);
+  const changeHfFreq = (e) => {
+    setHfFreq(e.target.value);
     if (playingRef.current && mode === 'am') tuneFreq(e.target.value, 'am');
+  };
+
+  const setHfDemod = (d) => {
+    setDemod(d);
+    setCwText('');
+    if (playingRef.current && mode === 'am') send({ op: 'demod', demod: d });
   };
 
   const changeMeshtasticFreq = (e) => {
@@ -812,11 +830,17 @@ export default function App() {
 
   const addPreset = () => {
     const name = newName.trim();
-    const cur = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : mode === 'meshtastic' ? meshtasticFreq : mode === 'adsb' ? adsbFreq : freq;
+    const cur = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? hfFreq : mode === 'meshtastic' ? meshtasticFreq : mode === 'adsb' ? adsbFreq : freq;
     if (!name || !parseFloat(cur)) return;
     const next = sortPresets([
       ...presets,
-      { name, freq: cur, mode, service: mode === 'dab' ? dabService || undefined : undefined },
+      {
+        name,
+        freq: cur,
+        mode,
+        demod: mode === 'am' ? demod : undefined,
+        service: mode === 'dab' ? dabService || undefined : undefined,
+      },
     ]);
     setPresets(next);
     persistPresets(mode, next);
@@ -831,9 +855,12 @@ export default function App() {
 
   const selectPreset = (p) => {
     const m = p.mode || 'fm';
+    const dem = m === 'am' ? p.demod || 'am' : undefined;
     if (m === 'nfm') setNfmFreq(p.freq);
-    else if (m === 'am') setAmFreq(p.freq);
-    else if (m === 'meshtastic') setMeshtasticFreq(p.freq);
+    else if (m === 'am') {
+      setHfFreq(p.freq);
+      setDemod(dem);
+    } else if (m === 'meshtastic') setMeshtasticFreq(p.freq);
     else if (m === 'adsb') setAdsbFreq(p.freq);
     else if (m === 'dab') {
       setDabFreq(p.freq);
@@ -842,9 +869,9 @@ export default function App() {
     if (m !== mode) loadPresets(m);
     setMode(m);
     if (playingRef.current) {
-      tuneFreq(p.freq, m, p.service);
+      tuneFreq(p.freq, m, p.service, { demod: dem });
     } else {
-      play(p.freq, m, p.service);
+      play(p.freq, m, p.service, dem);
     }
   };
 
@@ -867,17 +894,19 @@ export default function App() {
       const ticks = Math.trunc(wheelAccRef.current / 100);
       if (ticks === 0) return;
       wheelAccRef.current -= ticks * 100;
-      const { mode: m, tuneStep: step, nfmFreq: nf, amFreq: af } = fineRef.current;
-      const cur = m === 'nfm' ? nf : m === 'am' ? af : null;
+      const { mode: m, tuneStep: step, nfmFreq: nf, hfFreq: hf } = fineRef.current;
+      const cur = m === 'nfm' ? nf : m === 'am' ? hf : null;
       if (cur === null) return;
       const hz = Math.round(parseFloat(cur) * 1e6);
-      const next = Math.max(0, Math.min(1_000_000_000, hz - ticks * step));
+      // HF band spans 0-30 MHz.
+      const maxHz = m === 'am' ? 30_000_000 : 1_000_000_000;
+      const next = Math.max(0, Math.min(maxHz, hz - ticks * step));
       const s = (next / 1e6).toFixed(4);
       if (m === 'nfm') {
         setNfmFreq(s);
         if (playingRef.current && tuneFreqRef.current) tuneFreqRef.current(s, 'nfm', undefined, { clear: false });
       } else {
-        setAmFreq(s);
+        setHfFreq(s);
         if (playingRef.current && tuneFreqRef.current) tuneFreqRef.current(s, 'am', undefined, { clear: false });
       }
       setKnobAngle((a) => (((a - ticks * KNOB_DEG) % 360) + 360) % 360);
@@ -891,7 +920,7 @@ export default function App() {
     const fb = parseFloat(b);
     return Number.isFinite(fa) && Number.isFinite(fb) && Math.abs(fa - fb) < 5e-4;
   };
-  const currentFreq = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : mode === 'meshtastic' ? meshtasticFreq : mode === 'adsb' ? adsbFreq : freq;
+  const currentFreq = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? hfFreq : mode === 'meshtastic' ? meshtasticFreq : mode === 'adsb' ? adsbFreq : freq;
   const currentService = mode === 'dab' ? dabInfo?.service || dabService || '' : '';
   const isPlayingPreset = (p) => {
     if (!playing || !p.freq || !freqMatch(p.freq, currentFreq)) return false;
@@ -997,7 +1026,7 @@ export default function App() {
       >
         <option value="fm">FM</option>
         <option value="nfm">NFM</option>
-        <option value="am">AM</option>
+        <option value="am">HF</option>
         <option value="dab">DAB</option>
         <option value="meshtastic">Meshtastic</option>
         <option value="adsb">ADS-B</option>
@@ -1036,9 +1065,9 @@ export default function App() {
               <label>
                 Frequency (MHz)
                 <input
-                  value={mode === 'nfm' ? nfmFreq : mode === 'am' ? amFreq : mode === 'meshtastic' ? meshtasticFreq : mode === 'adsb' ? adsbFreq : freq}
-                  onChange={mode === 'nfm' ? changeNfmFreq : mode === 'am' ? changeAmFreq : mode === 'meshtastic' ? changeMeshtasticFreq : mode === 'adsb' ? changeAdsbFreq : changeFreq}
-                  placeholder={mode === 'nfm' ? '145.000' : mode === 'am' ? '7.100' : mode === 'meshtastic' ? '869.525' : mode === 'adsb' ? '1090.000' : '95.1'}
+                  value={mode === 'nfm' ? nfmFreq : mode === 'am' ? hfFreq : mode === 'meshtastic' ? meshtasticFreq : mode === 'adsb' ? adsbFreq : freq}
+                  onChange={mode === 'nfm' ? changeNfmFreq : mode === 'am' ? changeHfFreq : mode === 'meshtastic' ? changeMeshtasticFreq : mode === 'adsb' ? changeAdsbFreq : changeFreq}
+                  placeholder={mode === 'nfm' ? '145.000' : mode === 'am' ? '0.000 – 30.000' : mode === 'meshtastic' ? '869.525' : mode === 'adsb' ? '1090.000' : '95.1'}
                   inputMode="decimal"
                 />
               </label>
@@ -1340,6 +1369,9 @@ export default function App() {
                     style={{ left: mode === 'nfm' || mode === 'am' ? '50%' : `${tunePct}%` }}
                   />
                 )}
+                {mode === 'am' && demod === 'cw' && cwText && (
+                  <div className="cw-overlay">{cwText}</div>
+                )}
               </div>
               <div className="waterfall-axis">
                 {mode === 'nfm' || mode === 'am' || mode === 'meshtastic' ? (
@@ -1430,6 +1462,19 @@ export default function App() {
 
         {mode !== 'adsb' && (
           <div className="col col-right">
+            {mode === 'am' && (
+              <div className="demod-buttons">
+                {['am', 'usb', 'lsb', 'cw'].map((d) => (
+                  <button
+                    key={d}
+                    className={`demod-button${demod === d ? ' active' : ''}`}
+                    onClick={() => setHfDemod(d)}
+                  >
+                    {d.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="stations">
               <div className="stations-title">{mode === 'dab' ? 'Favourites' : 'Stations'}</div>
             {presets.length === 0 && (
@@ -1452,7 +1497,9 @@ export default function App() {
                     <span className="station-service">{p.service}</span>
                   )}
                   <span className="station-freq">
-                    {p.mode === 'dab' ? `${dabChannelForMhz(parseFloat(p.freq) || 216.928)[0]} · ${p.freq} MHz` : `${p.freq} MHz`}
+                    {p.mode === 'dab'
+                      ? `${dabChannelForMhz(parseFloat(p.freq) || 216.928)[0]} · ${p.freq} MHz`
+                      : `${p.freq} MHz${p.mode === 'am' && p.demod ? ` · ${String(p.demod).toUpperCase()}` : ''}`}
                   </span>
                 </button>
                 <button className="station-del" onClick={() => removePreset(i)} title="Delete">

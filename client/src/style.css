@@ -413,6 +413,26 @@ button:disabled {
   filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.9));
 }
 
+.cw-overlay {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(240, 246, 252, 0.25);
+  border-radius: 4px;
+  color: #7ee787;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.3;
+  white-space: pre-wrap;
+  word-break: break-word;
+  pointer-events: none;
+  max-height: 40%;
+  overflow: hidden;
+}
+
 .waterfall-axis {
   display: flex;
   justify-content: space-between;
@@ -526,6 +546,35 @@ button:disabled {
   background: #1f6feb;
   border-color: #388bfd;
   color: #fff;
+}
+
+.demod-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.demod-button {
+  padding: 6px 8px;
+  font-size: 12px;
+  text-align: center;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #c9d1d9;
+  cursor: pointer;
+}
+
+.demod-button:hover {
+  border-color: #8b949e;
+}
+
+.demod-button.active {
+  background: #1f6feb;
+  border-color: #388bfd;
+  color: #fff;
+  font-weight: 600;
 }
 
 .stations {

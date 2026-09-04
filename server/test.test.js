@@ -3,10 +3,11 @@ import net from 'node:net';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { RtlTcpClient, CMD, DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
-import { FmDecoder, AmDecoder, LinearResampler, ChannelPowerMeter } from './dsp.js';
+import { FmDecoder, AmDecoder, SsbDecoder, LinearResampler, ChannelPowerMeter } from './dsp.js';
 import { SpectrumAnalyzer, DEFAULT_BINS } from './spectrum.js';
 import { channelBlockForFreq, channelFreqKHz, DabReceiver } from './dab.js';
 import { AudioStreamManager, scanThresholdFor } from './audioStream.js';
+import { CwDecoder, MORSE } from './cw.js';
 import { parseMeshtasticPacket, resolveMeshtasticKey } from './meshtastic.js';
 import { parseSbsLine, AdsbTracker } from './adsb.js';
 import { imageSizeOfFile } from './fmLogos.js';
@@ -185,6 +186,108 @@ function synthAmIq(samples, { fs = 1_000_000, cOff = 0, modFreq = 1000, depth = 
     buf[s * 2 + 1] = 128 + Math.round(env * Math.sin(ph) * 110);
   }
   return buf;
+}
+
+// Single-sideband: a pure complex exponential at +freq Hz is the analytic
+// signal of the wanted sideband (USB) or, at -freq Hz, of LSB, with the
+// carrier suppressed. The demodulator must recover that audio tone only from
+// the matching sideband and reject the image.
+function synthSsbToneIq(samples, { fs = 1_000_000, freq = 1000, amp = 110, side = 'usb' } = {}) {
+  const buf = Buffer.alloc(samples * 2);
+  const w = (2 * Math.PI * (side === 'usb' ? freq : -freq)) / fs;
+  for (let s = 0; s < samples; s++) {
+    const ph = w * s;
+    buf[s * 2] = 128 + Math.round(amp * Math.cos(ph));
+    buf[s * 2 + 1] = 128 + Math.round(amp * Math.sin(ph));
+  }
+  return buf;
+}
+
+// Runs an SSB tone through a decoder (chunked like a real stream) and returns
+// the concatenated PCM plus a normalized tone-ratio probe, so a test can check
+// both that the wanted 1 kHz tone is recovered and that the image is not.
+function decodeSsbStats(iq, dec, CH = 60000) {
+  const chunks = [];
+  for (let i = 0; i < iq.length; i += CH * 2) {
+    chunks.push(dec.process(iq.subarray(i, Math.min(i + CH * 2, iq.length))));
+  }
+  const total = chunks.reduce((a, c) => a + c.length, 0);
+  const pcm = new Int16Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    pcm.set(c, off);
+    off += c.length;
+  }
+  const N = pcm.length;
+  let sumSq = 0;
+  for (let i = 0; i < N; i++) {
+    const y = pcm[i] / 32768;
+    sumSq += y * y;
+  }
+  const rms = Math.sqrt(sumSq / N);
+  const totalPow = sumSq / N;
+  const toneAt = (freq) => {
+    let tc = 0;
+    let ts = 0;
+    for (let i = 0; i < N; i++) {
+      const w = (2 * Math.PI * freq * i) / 48000;
+      tc += (pcm[i] / 32768) * Math.cos(w);
+      ts += (pcm[i] / 32768) * Math.sin(w);
+    }
+    return ((tc * tc + ts * ts) / N) / N / totalPow;
+  };
+  return { pcm, N, rms, toneAt, ratio: toneAt(1000) };
+}
+
+// Synthesizes a keyed CW tone for a message: mark = tone, space = low noise
+// (standing in for the AGC-boosted noise floor), timed with the standard
+// dot=1 / dash=3 / intra=1 / inter-char=3 / word=7 unit ratios.
+function synthCwAudio(message, { fs = 48_000, dotSec = 0.06, toneFreq = 700, amp = 0.25, noiseAmp = 0.02 } = {}) {
+  const timeline = [];
+  const words = message.toUpperCase().split(' ');
+  for (let w = 0; w < words.length; w++) {
+    const word = words[w];
+    for (let c = 0; c < word.length; c++) {
+      const code = MORSE[word[c]];
+      if (!code) continue;
+      for (let i = 0; i < code.length; i++) {
+        timeline.push({ on: true, u: code[i] === '.' ? 1 : 3 });
+        if (i < code.length - 1) timeline.push({ on: false, u: 1 });
+      }
+      if (c < word.length - 1) timeline.push({ on: false, u: 3 });
+    }
+    if (w < words.length - 1) timeline.push({ on: false, u: 7 });
+  }
+  // Trailing silence long enough for the decoder to finalize the last word.
+  timeline.push({ on: false, u: 8 });
+
+  const out = [];
+  let t = 0;
+  let seed = 987654321;
+  const rand = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  for (const seg of timeline) {
+    const dur = seg.u * dotSec;
+    const n = Math.round(dur * fs);
+    for (let k = 0; k < n; k++) {
+      if (seg.on) out.push(amp * Math.sin((2 * Math.PI * toneFreq * (t + k / fs))));
+      else out.push(noiseAmp * (rand() - 0.5) * 2);
+    }
+    t += dur;
+  }
+  return Float32Array.from(out);
+}
+
+function decodeCw(audio, dec) {
+  let last = '';
+  dec.onText = (t) => {
+    last = t;
+  };
+  for (let i = 0; i < audio.length; i += 2048) dec.push(audio.subarray(i, i + 2048));
+  dec.flush();
+  return last;
 }
 
 describe('rtl-tcp protocol', () => {
@@ -548,6 +651,126 @@ describe('AM DSP', () => {
   });
 });
 
+describe('SSB DSP', () => {
+  const mkDecoder = (sideband) =>
+    new SsbDecoder({
+      inRate: 1_000_000,
+      audioRate: 50_000,
+      audioCutoff: 1_400,
+      gain: 1,
+      taps: 512,
+      outputRate: 48_000,
+      agc: true,
+      channelCutoff: 6_000,
+      sideband,
+      shift: 1_500,
+    });
+
+  it('demodulates a USB 1 kHz tone', () => {
+    const iq = synthSsbToneIq(1_000_000, { side: 'usb' });
+    const { pcm, rms, ratio, toneAt } = decodeSsbStats(iq, mkDecoder('usb'));
+    writeWav('/tmp/usb_test.wav', pcm, 48000);
+    console.log(`  USB rms=${rms.toFixed(4)} 1kHz ratio=${ratio.toFixed(3)} 500=${toneAt(500).toFixed(3)} 1500=${toneAt(1500).toFixed(3)}`);
+    expect(rms).toBeGreaterThan(0.01);
+    expect(rms).toBeLessThan(0.5);
+    expect(ratio).toBeGreaterThan(0.35);
+    expect(ratio).toBeGreaterThan(toneAt(500) * 5);
+    expect(ratio).toBeGreaterThan(toneAt(1500) * 5);
+  });
+
+  it('demodulates a LSB 1 kHz tone', () => {
+    const iq = synthSsbToneIq(1_000_000, { side: 'lsb' });
+    const { pcm, rms, ratio, toneAt } = decodeSsbStats(iq, mkDecoder('lsb'));
+    writeWav('/tmp/lsb_test.wav', pcm, 48000);
+    console.log(`  LSB rms=${rms.toFixed(4)} 1kHz ratio=${ratio.toFixed(3)} 500=${toneAt(500).toFixed(3)} 1500=${toneAt(1500).toFixed(3)}`);
+    expect(rms).toBeGreaterThan(0.01);
+    expect(rms).toBeLessThan(0.5);
+    expect(ratio).toBeGreaterThan(0.35);
+    expect(ratio).toBeGreaterThan(toneAt(500) * 5);
+    expect(ratio).toBeGreaterThan(toneAt(1500) * 5);
+  });
+
+  it('rejects the opposite sideband (image) of a wrong-side tone', () => {
+    // A USB-coded tone must NOT appear as 1 kHz audio through the LSB path and
+    // vice-versa, otherwise adjacent SSB stations would bleed into each other.
+    const usb = synthSsbToneIq(1_000_000, { side: 'usb' });
+    const lsb = synthSsbToneIq(1_000_000, { side: 'lsb' });
+    const sbUsb = decodeSsbStats(usb, mkDecoder('usb'));
+    const lsbWrong = decodeSsbStats(usb, mkDecoder('lsb'));
+    const usbWrong = decodeSsbStats(lsb, mkDecoder('usb'));
+    const sbLsb = decodeSsbStats(lsb, mkDecoder('lsb'));
+    console.log(`  image rejection: USB->USB=${sbUsb.ratio.toFixed(3)} USB->LSB=${lsbWrong.ratio.toFixed(3)} LSB->USB=${usbWrong.ratio.toFixed(3)} LSB->LSB=${sbLsb.ratio.toFixed(3)}`);
+    // The wanted sideband clearly dominates over the (leaking) image.
+    expect(sbUsb.ratio).toBeGreaterThan(lsbWrong.ratio * 5);
+    expect(sbLsb.ratio).toBeGreaterThan(usbWrong.ratio * 5);
+  });
+});
+
+describe('CW decoder', () => {
+  it('decodes morse text from a keyed tone', () => {
+    const dec = new CwDecoder({ sampleRate: 48_000 });
+    const audio = synthCwAudio('SOS', { dotSec: 0.06, toneFreq: 700 });
+    const text = decodeCw(audio, dec);
+    console.log(`  CW 'SOS' decoded: ${JSON.stringify(text)}`);
+    expect(text.trim()).toBe('SOS');
+  });
+
+  it('decodes multiple words separated by a gap', () => {
+    const dec = new CwDecoder({ sampleRate: 48_000 });
+    const audio = synthCwAudio('HI THERE', { dotSec: 0.06, toneFreq: 600 });
+    const text = decodeCw(audio, dec);
+    console.log(`  CW 'HI THERE' decoded: ${JSON.stringify(text)}`);
+    expect(text.replace(/\s+/g, ' ').trim()).toBe('HI THERE');
+  });
+
+  it('adapts to a faster (shorter-dot) sender', () => {
+    const dec = new CwDecoder({ sampleRate: 48_000 });
+    const audio = synthCwAudio('CQ', { dotSec: 0.04, toneFreq: 800 });
+    const text = decodeCw(audio, dec);
+    console.log(`  CW 'CQ' (40ms dot) decoded: ${JSON.stringify(text)}`);
+    expect(text.replace(/\s+/g, ' ').trim()).toBe('CQ');
+  });
+
+  it('does not decode an unkeyed continuous tone', () => {
+    const dec = new CwDecoder({ sampleRate: 48_000 });
+    // One long, uninterrupted tone is not a valid morse sequence.
+    const audio = new Float32Array(48_000 * 2);
+    for (let i = 0; i < audio.length; i++) audio[i] = 0.25 * Math.sin((2 * Math.PI * 700 * i) / 48_000);
+    const text = decodeCw(audio, dec);
+    console.log(`  CW continuous tone decoded: ${JSON.stringify(text)}`);
+    expect(text).toBe('');
+  });
+});
+
+describe('HF demodulator selection', () => {
+  it('switches AM/USB/LSB/CW without reconnecting and preserves the channel offset', () => {
+    const mgr = new AudioStreamManager();
+    mgr.mode = 'am';
+    mgr.connected = true;
+    mgr.captureCenter = 7_000_000;
+    mgr.freq = 7_100_000;
+    mgr.rtl = { tune: vi.fn() };
+    mgr.decoder = mgr._createHfDecoder('am');
+    expect(mgr.decoder).toBeInstanceOf(AmDecoder);
+
+    // USB: decoder becomes an SSB demodulator, tuned +100 kHz digitally.
+    mgr.setDemod('usb');
+    expect(mgr.demod).toBe('usb');
+    expect(mgr.decoder).toBeInstanceOf(SsbDecoder);
+    expect(mgr.decoder.mixOffset).toBe(100_000);
+
+    // CW uses the SSB demodulator (USB sideband) plus the CW decoder.
+    mgr.setDemod('cw');
+    expect(mgr.decoder).toBeInstanceOf(SsbDecoder);
+
+    // Non-HF modes ignore demodulator switching.
+    mgr.mode = 'nfm';
+    mgr.demod = 'am';
+    mgr.setDemod('usb');
+    expect(mgr.demod).toBe('am');
+  });
+});
+
 describe('Channel power meter', () => {
   it('separates on-channel signal from adjacent channels and noise', () => {
     const fs = 288_000;
@@ -733,11 +956,12 @@ describe('Preset store', () => {
       const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
       expect(stored.alice.fm.length).toBe(2);
       expect(stored.alice.fm[0].name).toBe('Radio1');
-      setPresets('alice', 'am', [{ name: 'AM1', freq: '7.1' }]);
+      setPresets('alice', 'am', [{ name: 'AM1', freq: '7.1', demod: 'usb' }]);
       setPresets('bob', 'fm', [{ name: 'Bob FM', freq: '88.8' }]);
       const aliceAm = getPresets('alice', 'am');
       expect(aliceAm.length).toBe(1);
       expect(aliceAm[0].mode).toBe('am');
+      expect(aliceAm[0].demod).toBe('usb');
       expect(getPresets('bob', 'fm').length).toBe(1);
       expect(getPresets('alice', 'fm').length).toBe(2);
     } finally {
