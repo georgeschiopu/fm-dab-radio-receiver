@@ -1,10 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { RtlTcpClient, DEFAULT_SAMPLE_RATE } from './rtlTcp.js';
-import { FmDecoder, AmDecoder, ChannelPowerMeter } from './dsp.js';
+import { FmDecoder, AmDecoder, SsbDecoder, ChannelPowerMeter } from './dsp.js';
 import { SpectrumAnalyzer } from './spectrum.js';
 import { DabReceiver, BAND_III } from './dab.js';
 import { MeshtasticReceiver } from './meshtasticReceiver.js';
 import { MESHTASTIC_DEFAULT_FREQ, MESHTASTIC_IF_OFFSET, MESHTASTIC_SAMPLE_RATE } from './meshtastic.js';
+import { CwDecoder } from './cw.js';
 import { AdsbReceiver } from './adsbReceiver.js';
 import { ADSB_DEFAULT_FREQ, ADSB_SAMPLE_RATE } from './adsb.js';
 
@@ -46,6 +47,17 @@ const AM_IF_CUTOFF = 6_000; // channel-selectivity filter before the envelope de
 const AM_AUDIO_CUTOFF = 5_000; // HF AM voice is a bit wider than NFM
 const AM_GAIN = 1; // AGC normalizes level; this is just the start gain
 
+// LSB / USB single-sideband (HF voice). Shares the 1 Msps NFM/AM waterfall,
+// but the demod selects just one sideband of the tuned channel instead of the
+// symmetric lobe that AM recovers.
+const SSB_SAMPLE_RATE = 1_000_000;
+const SSB_AUDIO_RATE = 50_000; // integer decimation of 1 MHz; resampled to 48k server-side
+const SSB_OUTPUT_RATE = 48_000; // final rate sent to the browser (matches AudioContext)
+const SSB_IF_CUTOFF = 6_000; // channel-selectivity filter before the sideband selection
+const SSB_AUDIO_CUTOFF = 1_400; // selection low-pass half-width (voice bandwidth / 2)
+const SSB_SHIFT = 1_500; // BFO: centres the kept voice band at DC and rejects the image
+const SSB_GAIN = 1; // AGC normalizes level; this is just the start gain
+
 export class AudioStreamManager extends EventEmitter {
   constructor() {
     super();
@@ -68,6 +80,11 @@ export class AudioStreamManager extends EventEmitter {
     this.gain = null;
     this.squelch = 0; // NFM squelch level, 0 = off
     this.stats = { signal: 0, audio: 0 };
+    this.demod = 'am'; // HF demodulator (am / usb / lsb / cw)
+    // CW (morse) decoding runs on the demodulated audio when the CW demodulator
+    // is selected in HF mode.
+    this.cw = new CwDecoder();
+    this.cw.onText = (text) => this.emit('cw', text);
     this.onPcm = null;
     this.scanning = false;
     this.scan = null;
@@ -88,7 +105,7 @@ export class AudioStreamManager extends EventEmitter {
     this.adsb.on('error', (err) => this.emit('error', err));
   }
 
-  async start({ mode = 'fm', host, port, freq, gain = null, service = null, meshtasticKey = 'default' }) {
+  async start({ mode = 'fm', host, port, freq, gain = null, service = null, meshtasticKey = 'default', demod = 'am' }) {
     if (this.running) this.stop();
     this.mode = mode;
     this.host = host;
@@ -96,6 +113,7 @@ export class AudioStreamManager extends EventEmitter {
     this.freq = freq;
     this.gain = gain;
     this.meshtasticKey = meshtasticKey || 'default';
+    this.demod = demod;
     this.meshtasticPackets = 0;
     this.stats = { signal: 0, audio: 0 };
     this.running = true;
@@ -150,25 +168,22 @@ export class AudioStreamManager extends EventEmitter {
         channelCutoff: NFM_IF_CUTOFF,
       });
     } else if (mode === 'am') {
-      this.decoder = new AmDecoder({
-        inRate: AM_SAMPLE_RATE,
-        audioRate: AM_AUDIO_RATE,
-        audioCutoff: AM_AUDIO_CUTOFF,
-        gain: AM_GAIN,
-        taps: 512,
-        outputRate: AM_OUTPUT_RATE,
-        agc: true,
-        channelCutoff: AM_IF_CUTOFF,
-      });
+      // HF band (0-30 MHz): the demodulator (AM / USB / LSB / CW) is chosen
+      // separately for the tuned frequency. All four share the same 1 Msps
+      // front-end so switching demodulators never retunes the hardware.
+      this.decoder = this._createHfDecoder(demod);
     } else if (mode !== 'meshtastic' && mode !== 'adsb') {
       this.decoder = new FmDecoder();
     }
     if (this.decoder) this.decoder.reset();
-    // NFM/AM capture the whole 1 Msps band; a full-rate FFT on every 2048-sample
-    // block (~488/s) is far more waterfall than the 20 lines/s display needs and
-    // steals CPU from the audio path while the user rides the tuning knob. Stride
-    // the FFT so the waterfall stays smooth but costs a fraction of the CPU.
-    const nfmAm = mode === 'nfm' || mode === 'am';
+    if (this.cw) this.cw.reset();
+    // NFM/HF capture the whole 1 Msps band; a full-rate FFT on every
+    // 2048-sample block (~488/s) is far more waterfall than the 20 lines/s
+    // display needs and steals CPU from the audio path while the user rides the
+    // tuning knob. Stride the FFT so the waterfall stays smooth but costs a
+    // fraction of the CPU.
+    const hf = mode === 'am';
+    const nfmAm = mode === 'nfm' || hf;
     this.spec = new SpectrumAnalyzer({
       sampleRate: mode === 'meshtastic' ? MESHTASTIC_SAMPLE_RATE : mode === 'adsb' ? ADSB_SAMPLE_RATE : nfmAm ? AM_SAMPLE_RATE : DEFAULT_SAMPLE_RATE,
       fftEvery: nfmAm || mode === 'meshtastic' || mode === 'adsb' ? 4 : 1,
@@ -177,7 +192,7 @@ export class AudioStreamManager extends EventEmitter {
       if (this.onSpectrum) this.onSpectrum(line);
     };
     this.spec.reset();
-    const rtl = new RtlTcpClient({ host, port, sampleRate: mode === 'nfm' || mode === 'am' || mode === 'meshtastic' ? AM_SAMPLE_RATE : mode === 'adsb' ? ADSB_SAMPLE_RATE : DEFAULT_SAMPLE_RATE });
+    const rtl = new RtlTcpClient({ host, port, sampleRate: nfmAm || mode === 'meshtastic' ? AM_SAMPLE_RATE : mode === 'adsb' ? ADSB_SAMPLE_RATE : DEFAULT_SAMPLE_RATE });
     this.rtl = rtl;
     rtl.on('iq', (chunk) => this._onIq(chunk));
     rtl.on('disconnect', () => {
@@ -241,14 +256,16 @@ export class AudioStreamManager extends EventEmitter {
     }
     const pcm = this.decoder.process(chunk);
     this.spec.push(chunk);
-    // For NFM/AM the whole 1 MHz band is mostly noise, so the raw bandRms is a
-    // poor signal indicator; the demodulated audio level (post-AGC/gate) is
-    // proportional to the carrier lock instead.
-    const signal =
-      this.mode === 'nfm' || this.mode === 'am'
-        ? Math.min(1, this.decoder.outputRms / 0.18)
-        : this.decoder.bandRms;
-    const audio = this.mode === 'nfm' || this.mode === 'am' ? this.decoder.outputRms : this.decoder.audioRms;
+    // CW decode the demodulated audio when the CW demodulator is selected.
+    if (this.mode === 'am' && this.demod === 'cw' && this.cw) {
+      this.cw.push(pcm);
+    }
+    // For NFM/HF the whole 1 MHz band is mostly noise, so the raw bandRms
+    // is a poor signal indicator; the demodulated audio level (post-AGC/gate)
+    // is proportional to the carrier lock instead.
+    const narrow = this.mode === 'nfm' || this.mode === 'am';
+    const signal = narrow ? Math.min(1, this.decoder.outputRms / 0.18) : this.decoder.bandRms;
+    const audio = narrow ? this.decoder.outputRms : this.decoder.audioRms;
     this.stats = { signal, audio };
     if (this.onPcm) this.onPcm(pcm);
   }
@@ -631,6 +648,67 @@ export class AudioStreamManager extends EventEmitter {
     this.emit('status', this.status());
   }
 
+  // Build the HF (0-30 MHz) demodulator for a given demodulator selection.
+  _createHfDecoder(demod) {
+    if (demod === 'usb' || demod === 'lsb') {
+      return new SsbDecoder({
+        inRate: SSB_SAMPLE_RATE,
+        audioRate: SSB_AUDIO_RATE,
+        audioCutoff: SSB_AUDIO_CUTOFF,
+        gain: SSB_GAIN,
+        taps: 512,
+        outputRate: SSB_OUTPUT_RATE,
+        agc: true,
+        channelCutoff: SSB_IF_CUTOFF,
+        sideband: demod,
+        shift: SSB_SHIFT,
+      });
+    }
+    if (demod === 'cw') {
+      // CW is received as a beat tone, normally on the upper sideband.
+      return new SsbDecoder({
+        inRate: SSB_SAMPLE_RATE,
+        audioRate: SSB_AUDIO_RATE,
+        audioCutoff: SSB_AUDIO_CUTOFF,
+        gain: SSB_GAIN,
+        taps: 512,
+        outputRate: SSB_OUTPUT_RATE,
+        agc: true,
+        channelCutoff: SSB_IF_CUTOFF,
+        sideband: 'usb',
+        shift: SSB_SHIFT,
+      });
+    }
+    return new AmDecoder({
+      inRate: AM_SAMPLE_RATE,
+      audioRate: AM_AUDIO_RATE,
+      audioCutoff: AM_AUDIO_CUTOFF,
+      gain: AM_GAIN,
+      taps: 512,
+      outputRate: AM_OUTPUT_RATE,
+      agc: true,
+      channelCutoff: AM_IF_CUTOFF,
+    });
+  }
+
+  // Switch the HF demodulator without retuning the hardware (all HF demods use
+  // the same 1 Msps front-end). Keeps the digital channel offset so the tuned
+  // frequency stays put, and restarts CW decoding.
+  setDemod(demod) {
+    const d = ['am', 'usb', 'lsb', 'cw'].includes(demod) ? demod : 'am';
+    if (this.mode !== 'am' || d === this.demod) return;
+    const off = this.captureCenter != null && this.freq != null ? this.freq - this.captureCenter : 0;
+    this.demod = d;
+    if (this.decoder && this.rtl) {
+      this.decoder = this._createHfDecoder(d);
+      this.decoder.reset();
+      const maxOff = Math.floor((this.decoder.inRate / 2) * 0.8);
+      if (this.decoder.setChannelOffset && Math.abs(off) <= maxOff) this.decoder.setChannelOffset(off);
+    }
+    if (this.cw) this.cw.reset();
+    this.emit('status', this.status());
+  }
+
   setMeshtasticKey(key) {
     this.meshtasticKey = key || 'default';
     this.meshtastic.setKey(this.meshtasticKey);
@@ -644,6 +722,7 @@ export class AudioStreamManager extends EventEmitter {
       this.emit('scan', { kind: 'done', found: 0, total: 0, aborted: true });
     }
     this.freq = freq;
+    if (this.cw) this.cw.reset();
     if (this.mode === 'dab') {
       this.stats = { signal: 0, audio: 0 };
       if (this.dab.running) {
@@ -695,6 +774,7 @@ export class AudioStreamManager extends EventEmitter {
     this.meshtastic.stop();
     this.adsb.stop();
     this.dab.stop();
+    if (this.cw) this.cw.reset();
     this.emit('status', this.status());
   }
 
@@ -717,6 +797,7 @@ export class AudioStreamManager extends EventEmitter {
       span: this.mode === 'dab' ? null : this.spec ? this.spec.sampleRate : null,
       center: this.mode === 'dab' ? null : this.captureCenter,
       squelch: this.mode === 'nfm' ? this.squelch : 0,
+      demod: this.mode === 'am' ? this.demod : null,
       meshtasticPackets: this.mode === 'meshtastic' ? this.meshtasticPackets : 0,
       adsbCount: this.mode === 'adsb' ? this.adsbCount : 0,
       scanning: this.scanning,

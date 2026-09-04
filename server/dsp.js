@@ -657,6 +657,199 @@ export class AmDecoder {
   }
 }
 
+// SSB demodulator (LSB / USB): a direct-conversion receiver sees the wanted
+// sideband at a small positive (USB) or negative (LSB) frequency offset from the
+// suppressed carrier, which sits at baseband DC. A plain low-pass would let
+// BOTH sidebands through (that is DSB, not SSB), so the other sideband must be
+// rejected by an asymmetric band-pass. Rather than designing a complex/Hilbert
+// filter, we build the band-pass from stock parts: mix the complex baseband
+// down by half the voice bandwidth so the wanted sideband is centred at DC,
+// low-pass it (the discarded sideband now sits well outside the passband), mix
+// it back up again to restore the original audio pitch, then take the real part.
+//
+// The symmetric channel filter (`ifDec`) first rejects adjacent carriers and
+// decimates 1 Msps -> 50 ksps; the sideband selection then runs cheaply at
+// 50 ksps. AGC normalizes level exactly like the AM/NFM paths.
+export class SsbDecoder {
+  constructor({
+    inRate = 1_000_000,
+    audioRate = 50_000,
+    audioCutoff = 1_400, // selection low-pass half-width (keeps the wanted sideband)
+    gain = 1,
+    taps = 512,
+    outputRate = 48_000,
+    agc = true,
+    channelCutoff = 6_000, // IF-selectivity filter before the sideband selection
+    sideband = 'usb', // 'usb' selects the positive side, 'lsb' the negative
+    shift = 1_500, // BFO offset used to centre the wanted sideband at DC (Hz)
+  } = {}) {
+    if (inRate % audioRate !== 0) throw new Error(`inRate ${inRate} must be a multiple of ${audioRate}`);
+    if (sideband !== 'usb' && sideband !== 'lsb') throw new Error(`sideband must be 'usb' or 'lsb', got '${sideband}'`);
+    this.inRate = inRate;
+    this.audioRate = outputRate || audioRate;
+    this.decRate = audioRate;
+    this.m = inRate / audioRate;
+    this.sideband = sideband;
+    this.ifDec = new FirDecimator(designLowpass(channelCutoff, inRate, taps), this.m);
+    this.bandFirI = new FirFilter(designLowpass(audioCutoff, audioRate, taps));
+    this.bandFirQ = new FirFilter(designLowpass(audioCutoff, audioRate, taps));
+    this.shiftInc = (2 * Math.PI * shift) / audioRate;
+    this.shiftCos = Math.cos(this.shiftInc);
+    this.shiftSin = -Math.sin(this.shiftInc); // e^{-j*shiftInc}
+    this.downPhase = 0;
+    this.gain = gain;
+    this.agc = agc;
+    this.agcGain = agc ? 1 : gain;
+    this.resampler = outputRate && outputRate !== audioRate ? new LinearResampler(audioRate, outputRate) : null;
+    this.bandRms = 0;
+    this.audioRms = 0;
+    this.outputRms = 0;
+    this.mixOffset = 0;
+    this.mixPhase = 0;
+    this.mixInc = 0;
+    this.mixCos = 1;
+    this.mixSin = 0;
+  }
+
+  reset() {
+    this.ifDec.reset();
+    this.bandFirI.reset();
+    this.bandFirQ.reset();
+    this.bandRms = 0;
+    this.audioRms = 0;
+    this.outputRms = 0;
+    this.agcGain = this.agc ? 1 : this.gain;
+    if (this.resampler) this.resampler.reset();
+    this.mixPhase = 0;
+    this.downPhase = 0;
+  }
+
+  // Digital channel selection within the captured band (see FmDecoder).
+  setChannelOffset(offsetHz) {
+    const off = Math.round(Number(offsetHz) || 0);
+    this.mixOffset = off;
+    this.mixInc = off === 0 ? 0 : (2 * Math.PI * off) / this.inRate;
+    this.mixCos = Math.cos(this.mixInc);
+    this.mixSin = -Math.sin(this.mixInc);
+  }
+
+  // buf: Node Buffer of interleaved unsigned 8-bit I/Q at inRate.
+  // Returns a fresh Int16Array of audioRate Hz mono PCM.
+  process(buf) {
+    const n = buf.length >>> 1;
+    const r = new Float64Array(n);
+    const i = new Float64Array(n);
+    let bandSum = 0;
+    for (let s = 0; s < n; s++) {
+      const xr = (buf[s * 2] - 127.5) / 127.5;
+      const xi = (buf[s * 2 + 1] - 127.5) / 127.5;
+      r[s] = xr;
+      i[s] = xi;
+      bandSum += xr * xr + xi * xi;
+    }
+    this.bandRms = Math.sqrt(bandSum / (n * 2));
+
+    // Digitally shift the tuned channel to baseband when mixing is active (see
+    // FmDecoder for the recursive, trig-free phasor).
+    if (this.mixInc !== 0) {
+      let ph = this.mixPhase;
+      let cw = Math.cos(ph);
+      let sw = -Math.sin(ph);
+      const rc = this.mixCos;
+      const rs = this.mixSin;
+      for (let s = 0; s < n; s++) {
+        const xr = r[s];
+        const xi = i[s];
+        r[s] = xr * cw - xi * sw;
+        i[s] = xi * cw + xr * sw;
+        const ncw = cw * rc - sw * rs;
+        sw = cw * rs + sw * rc;
+        cw = ncw;
+      }
+      this.mixPhase = ph + n * this.mixInc;
+    }
+
+    // Select the tuned channel (rejecting adjacent carriers) and decimate to
+    // the audio rate before doing the sideband selection.
+    const c = this.ifDec.process(r, i);
+    const len = c.r.length;
+    const shiftInc = this.shiftInc;
+    const sc = this.shiftCos;
+    const ss = this.shiftSin;
+    let ph = this.downPhase;
+    let dc = Math.cos(ph);
+    let ds = -Math.sin(ph);
+    const isUsb = this.sideband === 'usb';
+    // First mix: shift the wanted sideband to baseband. USB (positive offset)
+    // is mixed DOWN by the BFO, LSB (negative offset) is mixed UP instead, so
+    // the unwanted sideband lands far outside the selection filter.
+    const shiftReal = new Float64Array(len);
+    const shiftImag = new Float64Array(len);
+    const phaseCos = new Float64Array(len);
+    const phaseSin = new Float64Array(len);
+    for (let k = 0; k < len; k++) {
+      const xr = c.r[k];
+      const xi = c.i[k];
+      // mix by e^{-j*shift*n} (isUsb) or its conjugate e^{+j*shift*n} (lsb).
+      const mr = isUsb ? xr * dc - xi * ds : xr * dc + xi * ds;
+      const mi = isUsb ? xr * ds + xi * dc : -xr * ds + xi * dc;
+      shiftReal[k] = mr;
+      shiftImag[k] = mi;
+      phaseCos[k] = dc;
+      phaseSin[k] = ds;
+      const ndc = dc * sc - ds * ss;
+      const nds = dc * ss + ds * sc;
+      dc = ndc;
+      ds = nds;
+    }
+    this.downPhase = (ph + len * shiftInc) % (2 * Math.PI);
+
+    // The selection low-pass keeps the (now baseband) wanted sideband and
+    // throws away everything shifted out of range, including the image.
+    const firReal = this.bandFirI.process(shiftReal);
+    const firImag = this.bandFirQ.process(shiftImag);
+
+    // Second mix inverts the first to restore the original audio pitch, then
+    // the real part of the analytic signal is the SSB audio.
+    const sel = new Float64Array(len);
+    let sumSq = 0;
+    for (let k = 0; k < len; k++) {
+      const pc = phaseCos[k];
+      const ps = phaseSin[k];
+      const v = isUsb ? firReal[k] * pc + firImag[k] * ps : firReal[k] * pc - firImag[k] * ps;
+      sel[k] = v;
+      sumSq += v * v;
+    }
+    this.audioRms = Math.sqrt(sumSq / Math.max(1, len));
+
+    let g = this.gain;
+    if (this.agc) {
+      const target = AGC_TARGET / Math.max(this.audioRms, 1e-4);
+      const coeff = target < this.agcGain ? AGC_ATTACK : AGC_RELEASE;
+      this.agcGain += (target - this.agcGain) * coeff;
+      g = Math.min(this.agcGain, AGC_MAX_GAIN);
+    }
+
+    let out = sel;
+    if (this.resampler) out = this.resampler.process(sel);
+
+    const scaled = new Int16Array(out.length);
+    const gg = g * 32767;
+    for (let k = 0; k < out.length; k++) {
+      let v = out[k] * gg;
+      if (v > 32767) v = 32767;
+      else if (v < -32768) v = -32768;
+      scaled[k] = v;
+    }
+
+    let outSum = 0;
+    for (let k = 0; k < scaled.length; k++) outSum += (scaled[k] / 32768) ** 2;
+    this.outputRms = Math.sqrt(outSum / Math.max(1, scaled.length));
+
+    return scaled;
+  }
+}
+
 // RF energy confined to a narrow band around the tuned center frequency. Used
 // by the FM scanner: an on-frequency FM carrier (constant envelope) reads high,
 // while an adjacent station 100 kHz away falls outside the passband and reads

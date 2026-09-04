@@ -24,12 +24,14 @@ function cleanPreset(p, mode) {
   if (!p || typeof p !== 'object' || typeof p.name !== 'string') return null;
   const name = String(p.name).trim();
   if (!name) return null;
+  const demod = ['am', 'usb', 'lsb', 'cw'].includes(p.demod) ? p.demod : undefined;
   return {
     name: name.slice(0, 80),
     freq: String(p.freq ?? ''),
     mode,
     service: p.service ? String(p.service).slice(0, 80) : undefined,
     sid: p.sid ? String(p.sid).slice(0, 8) : undefined,
+    demod: mode === 'am' ? demod : undefined,
   };
 }
 

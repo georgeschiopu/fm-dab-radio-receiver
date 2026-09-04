@@ -84,6 +84,7 @@ manager.on('info', (message) => {
 });
 manager.on('packet', (packet) => broadcast({ type: 'meshtastic', packet }));
 manager.on('aircraft', (aircraft) => broadcast({ type: 'adsb', aircraft }));
+manager.on('cw', (text) => broadcast({ type: 'cw', text }));
 
 // MOT slideshow covers written by dablin -> broadcast to clients as base64.
 const slides = new SlideWatcher();
@@ -253,6 +254,7 @@ wss.on('connection', (ws, req) => {
       const gain = msg.gain !== undefined && msg.gain !== '' ? Number(msg.gain) : DEFAULT_GAIN;
       const mode = msg.mode || 'fm';
       const service = msg.service !== undefined && msg.service !== '' ? String(msg.service) : null;
+      const demod = msg.demod !== undefined ? String(msg.demod) : 'am';
       if (!Number.isFinite(freq) || freq <= 0) return;
       if (msg.squelch !== undefined && Number.isFinite(Number(msg.squelch))) {
         manager.setSquelch(Number(msg.squelch));
@@ -268,9 +270,10 @@ wss.on('connection', (ws, req) => {
           manager.mode !== mode ||
           !manager.connected
         ) {
-          await manager.start({ mode, host, port, freq, gain, service, meshtasticKey });
+          await manager.start({ mode, host, port, freq, gain, service, meshtasticKey, demod });
         } else {
           manager.tune(freq, service);
+          manager.setDemod(demod);
           manager.setGain(gain);
         }
       } catch (err) {
@@ -282,6 +285,8 @@ wss.on('connection', (ws, req) => {
     } else if (msg.op === 'squelch') {
       const level = msg.level !== undefined ? Number(msg.level) : 0;
       if (Number.isFinite(level)) manager.setSquelch(level);
+    } else if (msg.op === 'demod') {
+      manager.setDemod(String(msg.demod || 'am'));
     } else if (msg.op === 'meshtasticKey') {
       if (manager.mode === 'meshtastic') {
         try {
