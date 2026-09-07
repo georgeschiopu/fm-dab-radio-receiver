@@ -357,6 +357,34 @@ button:disabled {
   color: #8b949e;
 }
 
+.tuned-freq {
+  text-align: center;
+  font-family: 'DSEG7-Classic', 'DSEG14-Classic', 'Share Tech Mono', ui-monospace,
+    'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  color: #7ee787;
+  line-height: 1.2;
+  padding: 2px 0 0;
+}
+
+.tuned-freq .tuned-digit {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+.tuned-freq .tuned-digit:hover {
+  background: #30363d;
+}
+
+.tuned-freq .tuned-digit.active {
+  background: #1f6feb;
+  color: #fff;
+}
+
 .waterfall-canvas {
   position: relative;
 }
@@ -380,6 +408,15 @@ button:disabled {
   border-radius: 6px;
 }
 
+.scope {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: #000;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+}
+
 .waterfall-marker {
   position: absolute;
   top: 0;
@@ -387,6 +424,18 @@ button:disabled {
   left: 50%;
   width: 0;
   pointer-events: none;
+}
+
+/* Thin vertical line joining the top/bottom arrows so the tuned frequency is
+   visible as a line across the whole visualiser. */
+.waterfall-marker-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.9);
 }
 
 .waterfall-marker::after {

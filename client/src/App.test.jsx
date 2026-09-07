@@ -341,4 +341,90 @@ describe('App', () => {
     await screen.findByText('1 stations found');
     expect(screen.getByText('BBC Radio 3')).toBeInTheDocument();
   });
+
+  it('uses the real-time spectrum scope in NFM mode instead of the waterfall', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', authenticatedFetch());
+    const { container } = render(<App />);
+    await screen.findByText('Stations');
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'nfm');
+    await screen.findByText('NFM band scan');
+
+    expect(container.querySelector('.waterfall-canvas .scope')).toBeTruthy();
+    expect(container.querySelector('.waterfall-canvas .waterfall')).toBeFalsy();
+  });
+
+  it('uses the real-time spectrum scope in HF (AM) mode too', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', authenticatedFetch());
+    const { container } = render(<App />);
+    await screen.findByText('Stations');
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'am');
+    await screen.findByText('Manual tuning · 0.1 MHz/step');
+
+    expect(container.querySelector('.waterfall-canvas .scope')).toBeTruthy();
+    expect(container.querySelector('.waterfall-canvas .waterfall')).toBeFalsy();
+  });
+
+  it('shows a centered digital tuned-frequency readout in NFM and HF modes', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', authenticatedFetch());
+    const { container } = render(<App />);
+    await screen.findByText('Stations');
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'nfm');
+    await screen.findByText('NFM band scan');
+    let readout = container.querySelector('.tuned-freq');
+    expect(readout).toBeTruthy();
+    expect(readout.textContent).toBe('145.0000 MHz');
+
+    // The tuning knob / scroll wheel steps the frequency and updates the readout.
+    window.dispatchEvent(new WheelEvent('wheel', { deltaY: 100, bubbles: true }));
+    await waitFor(() => expect(container.querySelector('.tuned-freq').textContent).toBe('144.9000 MHz'));
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'am');
+    await screen.findByText('Manual tuning · 0.1 MHz/step');
+    expect(container.querySelector('.tuned-freq').textContent).toBe('7.1000 MHz');
+  });
+
+  it('tuning knob steps change the chosen frequency digit', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', authenticatedFetch());
+    const { container } = render(<App />);
+    await screen.findByText('Stations');
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'nfm');
+    await screen.findByText('NFM band scan');
+
+    // 1 MHz step changes the units digit (145.0000 -> 144.0000).
+    await user.click(screen.getByRole('button', { name: '1 MHz' }));
+    window.dispatchEvent(new WheelEvent('wheel', { deltaY: 100, bubbles: true }));
+    await waitFor(() => expect(container.querySelector('.tuned-freq').textContent).toBe('144.0000 MHz'));
+
+    // 0.001 MHz step changes the thousandths digit (144.0000 -> 144.0010).
+    await user.click(screen.getByRole('button', { name: '0.001 MHz' }));
+    window.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true }));
+    await waitFor(() => expect(container.querySelector('.tuned-freq').textContent).toBe('144.0010 MHz'));
+  });
+
+  it('selects the tuning step by clicking a digit on the frequency readout and highlights it', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', authenticatedFetch());
+    const { container } = render(<App />);
+    await screen.findByText('Stations');
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'nfm');
+    await screen.findByText('NFM band scan');
+
+    const digits = () => container.querySelectorAll('.tuned-freq .tuned-digit');
+    // "145.0000" -> digit spans 1,4,5,0,0,0,0; index 5 is the thousandths (0.001 MHz).
+    await user.click(digits()[5]);
+    expect(digits()[5].classList.contains('active')).toBe(true);
+
+    // The knob now moves the thousandths digit.
+    window.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true }));
+    await waitFor(() => expect(container.querySelector('.tuned-freq').textContent).toBe('145.0010 MHz'));
+  });
 });

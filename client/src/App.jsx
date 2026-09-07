@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AudioPlayer } from './audio.js';
-import SpectrumAnalyzer from './SpectrumAnalyzer.jsx';
+import SpectrumScope from './SpectrumScope.jsx';
 import Waterfall from './Waterfall.jsx';
 import AdsbMap from './AdsbMap.jsx';
 import AdsbTable from './AdsbTable.jsx';
@@ -25,6 +25,15 @@ const sortPresets = (list) =>
   );
 
 const fmtMHz = (hz) => `${(hz / 1e6).toFixed(2)} MHz`;
+
+// The tuning step (Hz) that controls the digit at `index` of a MHz frequency
+// string such as "123.4567": the units digit (just before the decimal point) is
+// 1 MHz, the tenths is 0.1 MHz, the hundredths 0.01 MHz, and so on.
+function tunedDigitStep(freqStr, index) {
+  const dot = freqStr.indexOf('.');
+  const place = index < dot ? dot - 1 - index : -(index - dot);
+  return 10 ** (place + 6);
+}
 
 // ETSI EN 300 401 Band III block centres (MHz).
 const DAB_CHANNELS = [
@@ -703,8 +712,8 @@ export default function App() {
        if (m === 'meshtastic') setMeshtasticPackets([]);
        if (m === 'adsb') setAdsbAircraft([]);
        if (m === 'am') setCwText('');
-      if (m === 'dab') setDabServices([]);
-      if (spectrumRef.current) spectrumRef.current.clear();
+       if (m === 'dab') setDabServices([]);
+       if (spectrumRef.current) spectrumRef.current.clear();
     } catch (err) {
       setStatus(`Error: ${err.message}`);
       setBusy(false);
@@ -956,6 +965,7 @@ export default function App() {
     return Number.isFinite(fa) && Number.isFinite(fb) && Math.abs(fa - fb) < 5e-4;
   };
   const currentFreq = mode === 'dab' ? dabFreq : mode === 'nfm' ? nfmFreq : mode === 'am' ? hfFreq : mode === 'meshtastic' ? meshtasticFreq : mode === 'adsb' ? adsbFreq : freq;
+  const tunedFreqStr = (parseFloat(currentFreq) || 0).toFixed(4);
   const currentService = mode === 'dab' ? dabInfo?.service || dabService || '' : '';
   const isPlayingPreset = (p) => {
     if (!playing || !p.freq || !freqMatch(p.freq, currentFreq)) return false;
@@ -1322,7 +1332,7 @@ export default function App() {
                   <div className="tune-knob-indicator" style={{ transform: `rotate(${knobAngle}deg)` }} />
                 </div>
                 <div className="tune-steps">
-                  {[100, 1_000, 10_000, 100_000].map((s) => (
+                  {[1_000_000, 100_000, 10_000, 1_000].map((s) => (
                     <button
                       key={s}
                       className={`tune-step${tuneStep === s ? ' active' : ''}`}
@@ -1375,18 +1385,36 @@ export default function App() {
             </div>
           ) : mode === 'fm' || mode === 'nfm' || mode === 'am' || mode === 'meshtastic' ? (
             <div className="waterfall-wrap">
-              <div className="waterfall-title">
-                {mode === 'meshtastic'
-                  ? `Meshtastic LoRa · ${currentFreq} MHz`
-                  : mode === 'nfm' || mode === 'am'
-                  ? `Spectrum ±${(NFM_AM_VISIBLE_SPAN / 2 / 1e6).toFixed(2)} MHz around ${currentFreq} MHz`
-                  : centerHz
-                    ? `Spectrum ±${(span / 2 / 1e6).toFixed(2)} MHz around ${fmtMHz(centerHz)}`
-                    : 'Spectrum —'}
-              </div>
+              {mode === 'nfm' || mode === 'am' ? (
+                <div className="tuned-freq">
+                  {tunedFreqStr.split('').map((ch, i) => {
+                    if (ch === '.') return <span key={i} className="tuned-dot">.</span>;
+                    const step = tunedDigitStep(tunedFreqStr, i);
+                    return (
+                      <span
+                        key={i}
+                        className={`tuned-digit${step === tuneStep ? ' active' : ''}`}
+                        onClick={() => setTuneStep(step)}
+                        title={`Step ${step / 1e6} MHz`}
+                      >
+                        {ch}
+                      </span>
+                    );
+                  })}
+                  <span className="tuned-unit"> MHz</span>
+                </div>
+              ) : (
+                <div className="waterfall-title">
+                  {mode === 'meshtastic'
+                    ? `Meshtastic LoRa · ${currentFreq} MHz`
+                    : centerHz
+                      ? `Spectrum ±${(span / 2 / 1e6).toFixed(2)} MHz around ${fmtMHz(centerHz)}`
+                      : 'Spectrum —'}
+                </div>
+              )}
               <div className="waterfall-canvas">
-                {mode === 'fm' ? (
-                  <SpectrumAnalyzer ref={spectrumRef} bins={bins} height={160} />
+                {mode === 'fm' || mode === 'nfm' || mode === 'am' ? (
+                  <SpectrumScope ref={spectrumRef} bins={bins} height={160} />
                 ) : (
                   <Waterfall
                     ref={spectrumRef}
@@ -1401,12 +1429,14 @@ export default function App() {
                 {centerHz && (
                   <div
                     className="waterfall-marker"
-                    style={{ left: mode === 'nfm' || mode === 'am' ? '50%' : `${tunePct}%` }}
-                  />
+                    style={{ left: `${tunePct}%` }}
+                  >
+                    <span className="waterfall-marker-line" />
+                  </div>
                 )}
               </div>
               <div className="waterfall-axis">
-                {mode === 'nfm' || mode === 'am' || mode === 'meshtastic' ? (
+                {mode === 'meshtastic' ? (
                   <>
                     <span>{fmtMHz(Math.round((parseFloat(currentFreq) || 0) * 1e6) - NFM_AM_VISIBLE_SPAN / 2)}</span>
                     <span className="waterfall-center">{(parseFloat(currentFreq) || 0).toFixed(4)} MHz</span>
