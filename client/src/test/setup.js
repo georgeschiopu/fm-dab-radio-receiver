@@ -10,9 +10,17 @@ if (typeof window !== 'undefined' && window.HTMLCanvasElement) {
   // jsdom has no canvas implementation; provide a stub 2D context.
   const ctx = {
     fillStyle: '#000',
+    strokeStyle: '#fff',
+    lineWidth: 1,
     fillRect() {},
     clearRect() {},
     drawImage() {},
+    beginPath() {},
+    moveTo() {},
+    lineTo() {},
+    closePath() {},
+    fill() {},
+    stroke() {},
     getImageData(x, y, w, h) {
       return { data: new Uint8ClampedArray(Math.max(1, (w || 1) * (h || 1) * 4)) };
     },
