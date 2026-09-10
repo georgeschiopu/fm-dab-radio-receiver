@@ -26,4 +26,15 @@ describe('SpectrumScope', () => {
     expect(() => ref.current.push(new Uint8Array(128).fill(200))).not.toThrow();
     expect(() => ref.current.clear()).not.toThrow();
   });
+
+  it('buffers more spectrum lines than the waterfall holds without throwing', () => {
+    const ref = createRef();
+    render(<SpectrumScope ref={ref} bins={64} height={80} />);
+    const line = new Uint8Array(64).fill(150);
+    // Push past the waterfall ring-buffer capacity to exercise the wrap-around.
+    for (let i = 0; i < 200; i++) {
+      expect(() => ref.current.push(line)).not.toThrow();
+    }
+    expect(() => ref.current.clear()).not.toThrow();
+  });
 });
