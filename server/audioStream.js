@@ -6,6 +6,7 @@ import { DabReceiver, BAND_III } from './dab.js';
 import { MeshtasticReceiver } from './meshtasticReceiver.js';
 import { MESHTASTIC_DEFAULT_FREQ, MESHTASTIC_IF_OFFSET, MESHTASTIC_SAMPLE_RATE } from './meshtastic.js';
 import { CwDecoder } from './cw.js';
+import { RttyDecoder } from './rtty.js';
 import { AdsbReceiver } from './adsbReceiver.js';
 import { ADSB_DEFAULT_FREQ, ADSB_SAMPLE_RATE } from './adsb.js';
 
@@ -85,6 +86,10 @@ export class AudioStreamManager extends EventEmitter {
     // is selected in HF mode.
     this.cw = new CwDecoder();
     this.cw.onText = (text) => this.emit('cw', text);
+    // RTTY decoding runs on the demodulated USB audio when the RTTY demod is
+    // selected in HF mode.
+    this.rtty = new RttyDecoder();
+    this.rtty.onText = (text) => this.emit('rtty', text);
     this.onPcm = null;
     this.scanning = false;
     this.scan = null;
@@ -177,6 +182,7 @@ export class AudioStreamManager extends EventEmitter {
     }
     if (this.decoder) this.decoder.reset();
     if (this.cw) this.cw.reset();
+    if (this.rtty) this.rtty.reset();
     // NFM/HF capture the whole 1 Msps band; a full-rate FFT on every
     // 2048-sample block (~488/s) is far more waterfall than the 20 lines/s
     // display needs and steals CPU from the audio path while the user rides the
@@ -256,9 +262,12 @@ export class AudioStreamManager extends EventEmitter {
     }
     const pcm = this.decoder.process(chunk);
     this.spec.push(chunk);
-    // CW decode the demodulated audio when the CW demodulator is selected.
+    // CW / RTTY decode the demodulated audio when that demodulator is selected.
     if (this.mode === 'am' && this.demod === 'cw' && this.cw) {
       this.cw.push(pcm);
+    }
+    if (this.mode === 'am' && this.demod === 'rtty' && this.rtty) {
+      this.rtty.push(pcm);
     }
     // For NFM/HF the whole 1 MHz band is mostly noise, so the raw bandRms
     // is a poor signal indicator; the demodulated audio level (post-AGC/gate)
@@ -664,8 +673,9 @@ export class AudioStreamManager extends EventEmitter {
         shift: SSB_SHIFT,
       });
     }
-    if (demod === 'cw') {
-      // CW is received as a beat tone, normally on the upper sideband.
+    if (demod === 'cw' || demod === 'rtty') {
+      // CW is received as a beat tone and RTTY as a pair of FSK tones; both are
+      // normally on the upper sideband.
       return new SsbDecoder({
         inRate: SSB_SAMPLE_RATE,
         audioRate: SSB_AUDIO_RATE,
@@ -695,7 +705,7 @@ export class AudioStreamManager extends EventEmitter {
   // the same 1 Msps front-end). Keeps the digital channel offset so the tuned
   // frequency stays put, and restarts CW decoding.
   setDemod(demod) {
-    const d = ['am', 'usb', 'lsb', 'cw'].includes(demod) ? demod : 'am';
+    const d = ['am', 'usb', 'lsb', 'cw', 'rtty'].includes(demod) ? demod : 'am';
     if (this.mode !== 'am' || d === this.demod) return;
     const off = this.captureCenter != null && this.freq != null ? this.freq - this.captureCenter : 0;
     this.demod = d;
@@ -706,6 +716,7 @@ export class AudioStreamManager extends EventEmitter {
       if (this.decoder.setChannelOffset && Math.abs(off) <= maxOff) this.decoder.setChannelOffset(off);
     }
     if (this.cw) this.cw.reset();
+    if (this.rtty) this.rtty.reset();
     this.emit('status', this.status());
   }
 
@@ -723,6 +734,7 @@ export class AudioStreamManager extends EventEmitter {
     }
     this.freq = freq;
     if (this.cw) this.cw.reset();
+    if (this.rtty) this.rtty.reset();
     if (this.mode === 'dab') {
       this.stats = { signal: 0, audio: 0 };
       if (this.dab.running) {
@@ -775,6 +787,7 @@ export class AudioStreamManager extends EventEmitter {
     this.adsb.stop();
     this.dab.stop();
     if (this.cw) this.cw.reset();
+    if (this.rtty) this.rtty.reset();
     this.emit('status', this.status());
   }
 
