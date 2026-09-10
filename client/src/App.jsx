@@ -149,6 +149,7 @@ export default function App() {
   const [tuneStep, setTuneStep] = useState(100_000);
   const [knobAngle, setKnobAngle] = useState(0);
   const [cwText, setCwText] = useState('');
+  const [rttyText, setRttyText] = useState('');
 
   const wsRef = useRef(null);
   const playerRef = useRef(null);
@@ -371,7 +372,7 @@ export default function App() {
         if (typeof ev.data === 'string') {
           const msg = JSON.parse(ev.data);
            if (msg.type === 'status') {
-             if (msg.demod === 'am' || msg.demod === 'usb' || msg.demod === 'lsb' || msg.demod === 'cw') setDemod(msg.demod);
+             if (msg.demod === 'am' || msg.demod === 'usb' || msg.demod === 'lsb' || msg.demod === 'cw' || msg.demod === 'rtty') setDemod(msg.demod);
              if (msg.mode === 'meshtastic') {
                setStatus(msg.connected ? `Meshtastic · ${msg.meshtasticPackets || 0} packets` : 'Tuning Meshtastic…');
                if (msg.connected) {
@@ -427,6 +428,8 @@ export default function App() {
               setStatus(`ADS-B · ${(msg.aircraft || []).length} aircraft`);
             } else if (msg.type === 'cw') {
               setCwText(msg.text || '');
+            } else if (msg.type === 'rtty') {
+              setRttyText(msg.text || '');
             } else if (msg.type === 'info') {
              setStatus(msg.message);
           } else if (msg.type === 'slide') {
@@ -711,7 +714,7 @@ export default function App() {
        setDabSlide(null);
        if (m === 'meshtastic') setMeshtasticPackets([]);
        if (m === 'adsb') setAdsbAircraft([]);
-       if (m === 'am') setCwText('');
+       if (m === 'am') { setCwText(''); setRttyText(''); }
        if (m === 'dab') setDabServices([]);
        if (spectrumRef.current) spectrumRef.current.clear();
     } catch (err) {
@@ -753,7 +756,7 @@ export default function App() {
       // clear:false so the display keeps scrolling instead of restarting.
       if (spectrumRef.current) spectrumRef.current.clear();
     }
-    if (m2 === 'am') setCwText('');
+    if (m2 === 'am') { setCwText(''); setRttyText(''); }
   };
   tuneFreqRef.current = tuneFreq;
 
@@ -788,6 +791,7 @@ export default function App() {
     setMode(m);
     loadPresets(m);
     setCwText('');
+    setRttyText('');
     if (m === 'am') setDemod('am'); // HF defaults to the AM demodulator
     if (playingRef.current) {
       tuneFreq(m === 'dab' ? dabFreq : m === 'nfm' ? nfmFreq : m === 'am' ? hfFreq : m === 'meshtastic' ? meshtasticFreq : m === 'adsb' ? adsbFreq : freq, m, m === 'dab' ? dabService : undefined);
@@ -807,6 +811,7 @@ export default function App() {
   const setHfDemod = (d) => {
     setDemod(d);
     setCwText('');
+    setRttyText('');
     if (playingRef.current && mode === 'am') send({ op: 'demod', demod: d });
   };
 
@@ -1527,13 +1532,20 @@ export default function App() {
               <div className="cw-panel-text">{cwText}</div>
             </div>
           )}
+
+          {mode === 'am' && demod === 'rtty' && rttyText && (
+            <div className="cw-panel">
+              <div className="cw-panel-title">RTTY decoded</div>
+              <div className="cw-panel-text">{rttyText}</div>
+            </div>
+          )}
         </div>
 
         {mode !== 'adsb' && (
           <div className="col col-right">
             {mode === 'am' && (
               <div className="demod-buttons">
-                {['am', 'usb', 'lsb', 'cw'].map((d) => (
+                {['am', 'usb', 'lsb', 'cw', 'rtty'].map((d) => (
                   <button
                     key={d}
                     className={`demod-button${demod === d ? ' active' : ''}`}

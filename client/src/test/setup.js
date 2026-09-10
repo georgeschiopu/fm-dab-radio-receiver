@@ -21,6 +21,9 @@ if (typeof window !== 'undefined' && window.HTMLCanvasElement) {
     closePath() {},
     fill() {},
     stroke() {},
+    createImageData(w, h) {
+      return { data: new Uint8ClampedArray(Math.max(1, (w || 1) * (h || 1) * 4)), width: w, height: h };
+    },
     getImageData(x, y, w, h) {
       return { data: new Uint8ClampedArray(Math.max(1, (w || 1) * (h || 1) * 4)) };
     },

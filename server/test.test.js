@@ -8,6 +8,7 @@ import { SpectrumAnalyzer, DEFAULT_BINS } from './spectrum.js';
 import { channelBlockForFreq, channelFreqKHz, DabReceiver } from './dab.js';
 import { AudioStreamManager, scanThresholdFor } from './audioStream.js';
 import { CwDecoder, MORSE } from './cw.js';
+import { RttyDecoder, ITA2_LTRS, ITA2_FIGS } from './rtty.js';
 import { parseMeshtasticPacket, resolveMeshtasticKey } from './meshtastic.js';
 import { parseSbsLine, AdsbTracker } from './adsb.js';
 import { imageSizeOfFile } from './fmLogos.js';
@@ -742,8 +743,91 @@ describe('CW decoder', () => {
   });
 });
 
+describe('RTTY decoder', () => {
+  const FIGS = '11011';
+  const LTRS = '11111';
+
+  function encodeRttyChar(code) {
+    return [0, ...code.split('').map(Number), 1]; // start, 5 data, stop
+  }
+
+  // Encode text to ITA2 bits (1 = mark, 0 = space) with proper shift characters.
+  function encodeRtty(text) {
+    const bits = [];
+    let figure = false;
+    for (const ch of text.toUpperCase()) {
+      let code;
+      let isFig = false;
+      if (ch === ' ') code = '00100';
+      else {
+        code = Object.keys(ITA2_LTRS).find((k) => ITA2_LTRS[k] === ch);
+        if (!code) {
+          code = Object.keys(ITA2_FIGS).find((k) => ITA2_FIGS[k] === ch);
+          isFig = true;
+        }
+      }
+      if (isFig && !figure) {
+        bits.push(...encodeRttyChar(FIGS));
+        figure = true;
+      }
+      if (!isFig && figure && ch !== ' ') {
+        bits.push(...encodeRttyChar(LTRS));
+        figure = false;
+      }
+      bits.push(...encodeRttyChar(code));
+    }
+    return bits;
+  }
+
+  function synthRtty(text, { fs = 48_000, mark = 2295, space = 2125, noise = 0 } = {}) {
+    const bits = encodeRtty(text);
+    const bitLen = Math.round(fs / 45.45);
+    const out = new Float64Array(bits.length * bitLen);
+    let phase = 0;
+    let idx = 0;
+    for (const b of bits) {
+      const f = b ? mark : space;
+      for (let k = 0; k < bitLen; k++) {
+        phase += (2 * Math.PI * f) / fs;
+        out[idx++] = Math.sin(phase) + (noise ? (Math.random() - 0.5) * noise : 0);
+      }
+    }
+    return out;
+  }
+
+  function decodeRtty(audio, dec) {
+    let text = '';
+    dec.onText = (t) => {
+      text = t;
+    };
+    for (let i = 0; i < audio.length; i += 4800) dec.push(audio.subarray(i, Math.min(i + 4800, audio.length)));
+    return text;
+  }
+
+  it('decodes a standard 45.45-baud ITA2 transmission', () => {
+    const dec = new RttyDecoder({ sampleRate: 48_000 });
+    const audio = synthRtty('CQ CQ DE TEST 599 123');
+    const text = decodeRtty(audio, dec);
+    console.log(`  RTTY decoded: ${JSON.stringify(text)}`);
+    expect(text).toContain('TEST');
+    expect(text).toContain('599');
+    expect(text).toContain('123');
+  });
+
+  it('auto-detects the mark/space tones and polarity', () => {
+    const dec = new RttyDecoder({ sampleRate: 48_000 });
+    const audio = synthRtty('HELLO WORLD 73');
+    const text = decodeRtty(audio, dec);
+    console.log(`  RTTY tones ${dec.markFreq}/${dec.spaceFreq} Hz, decoded: ${JSON.stringify(text)}`);
+    expect(dec.markFreq).toBeGreaterThan(0);
+    expect(dec.spaceFreq).toBeGreaterThan(0);
+    expect(text).toContain('HELLO');
+    expect(text).toContain('WORLD');
+  });
+});
+
 describe('HF demodulator selection', () => {
-  it('switches AM/USB/LSB/CW without reconnecting and preserves the channel offset', () => {
+  it('switches AM/USB/LSB/CW/RTTY without reconnecting and preserves the channel offset', () => {
     const mgr = new AudioStreamManager();
     mgr.mode = 'am';
     mgr.connected = true;
@@ -761,6 +845,11 @@ describe('HF demodulator selection', () => {
 
     // CW uses the SSB demodulator (USB sideband) plus the CW decoder.
     mgr.setDemod('cw');
+    expect(mgr.decoder).toBeInstanceOf(SsbDecoder);
+
+    // RTTY uses the SSB demodulator (USB sideband) plus the RTTY decoder.
+    mgr.setDemod('rtty');
+    expect(mgr.demod).toBe('rtty');
     expect(mgr.decoder).toBeInstanceOf(SsbDecoder);
 
     // Non-HF modes ignore demodulator switching.

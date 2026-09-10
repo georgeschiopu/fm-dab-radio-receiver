@@ -427,4 +427,29 @@ describe('App', () => {
     window.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true }));
     await waitFor(() => expect(container.querySelector('.tuned-freq').textContent).toBe('145.0010 MHz'));
   });
+
+  it('offers an RTTY demodulator and shows the decoded text', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', authenticatedFetch());
+    render(<App />);
+    await screen.findByText('Stations');
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'am');
+    await screen.findByText('Manual tuning · 0.1 MHz/step');
+
+    const rttyButton = screen.getByRole('button', { name: 'RTTY' });
+    expect(rttyButton).toBeInTheDocument();
+
+    // Selecting RTTY while playing switches the server demodulator.
+    await user.click(screen.getByRole('button', { name: 'Play' }));
+    const ws = MockWebSocket.instances[0];
+    await waitFor(() => expect(ws.readyState).toBe(MockWebSocket.OPEN));
+    await user.click(rttyButton);
+    await waitFor(() => expect(ws.sent.some((m) => m.op === 'demod' && m.demod === 'rtty')).toBe(true));
+
+    // Decoded RTTY text is displayed in its own panel.
+    ws.emit({ type: 'rtty', text: 'CQ DE TEST' });
+    await screen.findByText('RTTY decoded');
+    expect(screen.getByText('CQ DE TEST')).toBeInTheDocument();
+  });
 });

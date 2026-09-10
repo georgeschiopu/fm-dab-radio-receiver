@@ -85,6 +85,7 @@ manager.on('info', (message) => {
 manager.on('packet', (packet) => broadcast({ type: 'meshtastic', packet }));
 manager.on('aircraft', (aircraft) => broadcast({ type: 'adsb', aircraft }));
 manager.on('cw', (text) => broadcast({ type: 'cw', text }));
+manager.on('rtty', (text) => broadcast({ type: 'rtty', text }));
 
 // MOT slideshow covers written by dablin -> broadcast to clients as base64.
 const slides = new SlideWatcher();
