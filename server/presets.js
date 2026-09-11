@@ -2,7 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const MODES = ['fm', 'nfm', 'am', 'dab', 'meshtastic'];
+// RF demodulators are stored as their own buckets (the preset's `mode` is the
+// demodulator), plus the standalone DAB / Meshtastic / ADS-B modes.
+const MODES = ['fm', 'nfm', 'am', 'usb', 'lsb', 'cw', 'rtty', 'dab', 'meshtastic', 'adsb'];
+// Old records kept every HF preset under 'am' with a `demod` field; these are
+// split out into their own buckets on load.
+const RF_DEMODS = ['usb', 'lsb', 'cw', 'rtty'];
 const DEFAULT_FILE = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -24,15 +29,32 @@ function cleanPreset(p, mode) {
   if (!p || typeof p !== 'object' || typeof p.name !== 'string') return null;
   const name = String(p.name).trim();
   if (!name) return null;
-  const demod = ['am', 'usb', 'lsb', 'cw'].includes(p.demod) ? p.demod : undefined;
   return {
     name: name.slice(0, 80),
     freq: String(p.freq ?? ''),
     mode,
     service: p.service ? String(p.service).slice(0, 80) : undefined,
     sid: p.sid ? String(p.sid).slice(0, 8) : undefined,
-    demod: mode === 'am' ? demod : undefined,
   };
+}
+
+// Move legacy HF presets (stored under 'am' with a `demod` field) into their
+// own demodulator buckets. Idempotent: once split, re-running is a no-op.
+function migrate(userMap) {
+  const amList = Array.isArray(userMap.am) ? userMap.am : [];
+  if (!amList.some((p) => p && RF_DEMODS.includes(p.demod))) return;
+  const kept = [];
+  for (const p of amList) {
+    if (!p || typeof p !== 'object') continue;
+    const d = RF_DEMODS.includes(p.demod) ? p.demod : 'am';
+    if (d === 'am') {
+      kept.push({ ...p, mode: 'am', demod: undefined });
+    } else {
+      if (!Array.isArray(userMap[d])) userMap[d] = [];
+      userMap[d].push({ ...p, mode: d, demod: undefined });
+    }
+  }
+  userMap.am = kept;
 }
 
 function load() {
@@ -53,6 +75,7 @@ function userPresets(user) {
   for (const mode of MODES) {
     if (!Array.isArray(map[user][mode])) map[user][mode] = [];
   }
+  migrate(map[user]);
   return map[user];
 }
 

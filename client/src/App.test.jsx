@@ -48,6 +48,12 @@ function authenticatedFetch() {
   });
 }
 
+// RF is the only top-level mode for FM/NFM/AM/USB/LSB/CW/RTTY; pick a demod by
+// clicking its button in the right column.
+async function selectDemod(user, label) {
+  await user.click(screen.getByRole('button', { name: label }));
+}
+
 beforeEach(() => {
   MockWebSocket.instances = [];
   vi.stubGlobal('WebSocket', MockWebSocket);
@@ -109,7 +115,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByText('Stations');
 
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'nfm');
+    await selectDemod(user, 'NFM');
     await screen.findByText('NFM band scan');
 
     await user.click(screen.getByRole('button', { name: 'Scan NFM band' }));
@@ -149,7 +155,7 @@ describe('App', () => {
     vi.stubGlobal('fetch', authenticatedFetch());
     render(<App />);
     await screen.findByText('Stations');
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'am');
+    await selectDemod(user, 'AM');
 
     const input = await screen.findByLabelText('Frequency (MHz)');
     expect(input.value).toBe('7.100');
@@ -162,7 +168,7 @@ describe('App', () => {
     vi.stubGlobal('fetch', authenticatedFetch());
     render(<App />);
     await screen.findByText('Stations');
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'am');
+    await selectDemod(user, 'AM');
 
     const input = await screen.findByLabelText('Frequency (MHz)');
     expect(input.value).toBe('7.100');
@@ -348,7 +354,7 @@ describe('App', () => {
     const { container } = render(<App />);
     await screen.findByText('Stations');
 
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'nfm');
+    await selectDemod(user, 'NFM');
     await screen.findByText('NFM band scan');
 
     expect(container.querySelector('.waterfall-canvas .scope')).toBeTruthy();
@@ -361,7 +367,7 @@ describe('App', () => {
     const { container } = render(<App />);
     await screen.findByText('Stations');
 
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'am');
+    await selectDemod(user, 'AM');
     await screen.findByText('Manual tuning · 0.1 MHz/step');
 
     expect(container.querySelector('.waterfall-canvas .scope')).toBeTruthy();
@@ -374,7 +380,7 @@ describe('App', () => {
     const { container } = render(<App />);
     await screen.findByText('Stations');
 
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'nfm');
+    await selectDemod(user, 'NFM');
     await screen.findByText('NFM band scan');
     let readout = container.querySelector('.tuned-freq');
     expect(readout).toBeTruthy();
@@ -384,7 +390,7 @@ describe('App', () => {
     window.dispatchEvent(new WheelEvent('wheel', { deltaY: 100, bubbles: true }));
     await waitFor(() => expect(container.querySelector('.tuned-freq').textContent).toBe('144.9000 MHz'));
 
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'am');
+    await selectDemod(user, 'AM');
     await screen.findByText('Manual tuning · 0.1 MHz/step');
     expect(container.querySelector('.tuned-freq').textContent).toBe('7.1000 MHz');
   });
@@ -395,7 +401,7 @@ describe('App', () => {
     const { container } = render(<App />);
     await screen.findByText('Stations');
 
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'nfm');
+    await selectDemod(user, 'NFM');
     await screen.findByText('NFM band scan');
 
     // 1 MHz step changes the units digit (145.0000 -> 144.0000).
@@ -415,7 +421,7 @@ describe('App', () => {
     const { container } = render(<App />);
     await screen.findByText('Stations');
 
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'nfm');
+    await selectDemod(user, 'NFM');
     await screen.findByText('NFM band scan');
 
     const digits = () => container.querySelectorAll('.tuned-freq .tuned-digit');
@@ -434,7 +440,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByText('Stations');
 
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Receiver mode' }), 'am');
+    await selectDemod(user, 'AM');
     await screen.findByText('Manual tuning · 0.1 MHz/step');
 
     const rttyButton = screen.getByRole('button', { name: 'RTTY' });
@@ -445,11 +451,56 @@ describe('App', () => {
     const ws = MockWebSocket.instances[0];
     await waitFor(() => expect(ws.readyState).toBe(MockWebSocket.OPEN));
     await user.click(rttyButton);
-    await waitFor(() => expect(ws.sent.some((m) => m.op === 'demod' && m.demod === 'rtty')).toBe(true));
+    await waitFor(() => expect(ws.sent.some((m) => m.op === 'tune' && m.demod === 'rtty')).toBe(true));
 
     // Decoded RTTY text is displayed in its own panel.
     ws.emit({ type: 'rtty', text: 'CQ DE TEST' });
     await screen.findByText('RTTY decoded');
     expect(screen.getByText('CQ DE TEST')).toBeInTheDocument();
+  });
+
+  it('groups FM/NFM/AM/USB/LSB/CW/RTTY under the RF mode', async () => {
+    vi.stubGlobal('fetch', authenticatedFetch());
+    const { container } = render(<App />);
+    await screen.findByText('Stations');
+
+    const modeSelect = screen.getByRole('combobox', { name: 'Receiver mode' });
+    expect([...modeSelect.options].map((o) => o.value)).toEqual(['rf', 'dab', 'meshtastic', 'adsb']);
+
+    const buttons = [...container.querySelectorAll('.demod-buttons .demod-button')].map((b) => b.textContent);
+    expect(buttons).toEqual(['FM', 'NFM', 'AM', 'USB', 'LSB', 'CW', 'RTTY']);
+  });
+
+  it('loads the station list for the selected demodulator', async () => {
+    const user = userEvent.setup();
+    const fetchMock = authenticatedFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    render(<App />);
+    await screen.findByText('Stations');
+
+    await user.click(screen.getByRole('button', { name: 'USB' }));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url]) => url === '/api/presets?mode=usb')).toBe(true)
+    );
+  });
+
+  it('saves a station under the current demodulator', async () => {
+    const user = userEvent.setup();
+    const fetchMock = authenticatedFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    render(<App />);
+    await screen.findByText('Stations');
+
+    await user.click(screen.getByRole('button', { name: 'USB' }));
+    await user.type(screen.getByPlaceholderText('Station name'), '20m net');
+    await user.click(screen.getByRole('button', { name: 'Save current' }));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, opts]) => url === '/api/presets?mode=usb' && opts && opts.method === 'PUT'
+        )
+      ).toBe(true)
+    );
   });
 });
