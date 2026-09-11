@@ -1045,12 +1045,12 @@ describe('Preset store', () => {
       const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
       expect(stored.alice.fm.length).toBe(2);
       expect(stored.alice.fm[0].name).toBe('Radio1');
-      setPresets('alice', 'am', [{ name: 'AM1', freq: '7.1', demod: 'usb' }]);
+      setPresets('alice', 'usb', [{ name: 'USB1', freq: '14.07' }]);
       setPresets('bob', 'fm', [{ name: 'Bob FM', freq: '88.8' }]);
-      const aliceAm = getPresets('alice', 'am');
-      expect(aliceAm.length).toBe(1);
-      expect(aliceAm[0].mode).toBe('am');
-      expect(aliceAm[0].demod).toBe('usb');
+      const aliceUsb = getPresets('alice', 'usb');
+      expect(aliceUsb.length).toBe(1);
+      expect(aliceUsb[0].mode).toBe('usb');
+      expect(getPresets('alice', 'am').length).toBe(0);
       expect(getPresets('bob', 'fm').length).toBe(1);
       expect(getPresets('alice', 'fm').length).toBe(2);
     } finally {
@@ -1069,6 +1069,45 @@ describe('Preset store', () => {
     try {
       expect(getPresets('alice', 'meshtastic')).toEqual([]);
       expect(getPresets('alice', 'dab')).toEqual([]);
+    } finally {
+      try {
+        fs.unlinkSync(file);
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  it('migrates legacy AM presets into per-demodulator buckets', () => {
+    const file = `/tmp/opencode-legacy-demods-${process.pid}.json`;
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        alice: {
+          fm: [],
+          nfm: [],
+          am: [
+            { name: 'AM stn', freq: '7.100' },
+            { name: 'USB stn', freq: '14.070', demod: 'usb' },
+            { name: 'CW stn', freq: '7.030', demod: 'cw' },
+            { name: 'LSB stn', freq: '3.700', demod: 'lsb' },
+          ],
+          dab: [],
+          meshtastic: [],
+        },
+      })
+    );
+    setPresetsFileForTests(file);
+    try {
+      expect(getPresets('alice', 'am').map((p) => p.name)).toEqual(['AM stn']);
+      expect(getPresets('alice', 'am')[0].mode).toBe('am');
+      expect(getPresets('alice', 'usb').map((p) => p.name)).toEqual(['USB stn']);
+      expect(getPresets('alice', 'usb')[0].mode).toBe('usb');
+      expect(getPresets('alice', 'cw').map((p) => p.name)).toEqual(['CW stn']);
+      expect(getPresets('alice', 'lsb').map((p) => p.name)).toEqual(['LSB stn']);
+      // Idempotent: a second read does not duplicate or lose anything.
+      expect(getPresets('alice', 'am').map((p) => p.name)).toEqual(['AM stn']);
+      expect(getPresets('alice', 'usb').map((p) => p.name)).toEqual(['USB stn']);
     } finally {
       try {
         fs.unlinkSync(file);
