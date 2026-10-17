@@ -20,6 +20,7 @@ import {
 import { getMeshtasticSettings, setMeshtasticSettings } from './userSettings.js';
 import { MESHTASTIC_DEFAULT_FREQ, resolveMeshtasticKey } from './meshtastic.js';
 import { ADSB_DEFAULT_FREQ } from './adsb.js';
+import { sstvCatalog } from './sstvSats.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -185,6 +186,30 @@ app.get('/api/config', requireAuth, (req, res) => {
 
 app.get('/api/meshtastic-config', requireAuth, (req, res) => {
   res.json(getMeshtasticSettings(req.user));
+});
+
+// SSTV Sats: satellites that broadcast SSTV (db.satnogs.org) and their TLEs.
+app.get('/api/sstv/satellites', requireAuth, async (req, res) => {
+  try {
+    const satellites = await sstvCatalog.getSatellites();
+    res.json({ satellites });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+app.get('/api/sstv/tle', requireAuth, async (req, res) => {
+  const norads = String(req.query.norads || req.query.norad || '')
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  if (!norads.length) return res.json({ tles: {} });
+  try {
+    const tles = await sstvCatalog.getTles(norads);
+    res.json({ tles });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
 });
 
 app.put('/api/meshtastic-config', requireAuth, (req, res) => {

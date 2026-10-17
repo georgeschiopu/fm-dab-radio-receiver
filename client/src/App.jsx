@@ -4,6 +4,7 @@ import SpectrumScope from './SpectrumScope.jsx';
 import Waterfall from './Waterfall.jsx';
 import AdsbMap from './AdsbMap.jsx';
 import AdsbTable from './AdsbTable.jsx';
+import SstvTracker from './SstvTracker.jsx';
 import { getAircraftPosition, getCachedPosition } from './adsbEnrich.js';
 
 // Presets are stored per mode and per user so FM / NFM station lists stay separate.
@@ -847,12 +848,26 @@ export default function App() {
     setMode(m);
     setCwText('');
     setRttyText('');
+    // SSTV Sats is a tracking-only mode: it neither loads an RF station list
+    // nor retunes the SDR.
+    if (m === 'sstv') return;
     // RF keeps the current demodulator and loads its station list.
     if (m === 'rf') loadPresets(demod);
     else loadPresets(m);
     if (playingRef.current) {
       tuneFreq(freqFor(m, demod), m, m === 'dab' ? dabService : undefined);
     }
+  };
+
+  // Called by the SSTV Sats tracker to listen to a satellite's downlink: switch
+  // to RF/NFM and tune the SDR to the given frequency (Hz).
+  const tuneSstvDownlink = (freqHz) => {
+    const mhz = (Number(freqHz) / 1e6).toFixed(4);
+    setMode('rf');
+    setDemod('nfm');
+    setNfmFreq(mhz);
+    loadPresets('nfm');
+    play(mhz, 'rf', undefined, 'nfm');
   };
 
   const changeNfmFreq = (e) => {
@@ -1149,8 +1164,12 @@ export default function App() {
         <option value="dab">DAB</option>
         <option value="meshtastic">Meshtastic</option>
         <option value="adsb">ADS-B</option>
+        <option value="sstv">SSTV Sats</option>
       </select>
 
+      {mode === 'sstv' ? (
+        <SstvTracker user={user} onTuneDownlink={tuneSstvDownlink} />
+      ) : (
       <div className="columns">
         <div className="col col-left">
           <div className="row">
@@ -1690,6 +1709,7 @@ export default function App() {
           </div>
         )}
       </div>
+      )}
 
       <div className={`status ${status.startsWith('Error') ? 'error' : ''}`}>{status}</div>
 
