@@ -465,7 +465,7 @@ describe('App', () => {
     await screen.findByText('Stations');
 
     const modeSelect = screen.getByRole('combobox', { name: 'Receiver mode' });
-    expect([...modeSelect.options].map((o) => o.value)).toEqual(['rf', 'dab', 'meshtastic', 'adsb']);
+    expect([...modeSelect.options].map((o) => o.value)).toEqual(['rf', 'dab', 'meshtastic', 'adsb', 'sstv']);
 
     const buttons = [...container.querySelectorAll('.demod-buttons .demod-button')].map((b) => b.textContent);
     expect(buttons).toEqual(['FM', 'NFM', 'AM', 'USB', 'LSB', 'CW', 'RTTY']);
