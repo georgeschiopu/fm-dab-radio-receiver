@@ -5,6 +5,7 @@ import Waterfall from './Waterfall.jsx';
 import AdsbMap from './AdsbMap.jsx';
 import AdsbTable from './AdsbTable.jsx';
 import SstvTracker from './SstvTracker.jsx';
+import SstvImage from './SstvImage.jsx';
 import { getAircraftPosition, getCachedPosition } from './adsbEnrich.js';
 
 // Presets are stored per mode and per user so FM / NFM station lists stay separate.
@@ -38,20 +39,23 @@ function tunedDigitStep(freqStr, index) {
 
 // FM / NFM / AM / USB / LSB / CW / RTTY are demodulators of the single "RF"
 // mode; DAB / Meshtastic / ADS-B stay separate top-level modes.
-const RF_DEMODS = ['fm', 'nfm', 'am', 'usb', 'lsb', 'cw', 'rtty'];
+const RF_DEMODS = ['fm', 'nfm', 'am', 'usb', 'lsb', 'cw', 'rtty', 'sstv'];
 const HF_DEMODS = ['am', 'usb', 'lsb', 'cw', 'rtty'];
+
+// SSTV decodes the NFM audio, so it shares NFM's frequency/tuning controls.
+const isNfmBand = (d) => d === 'nfm' || d === 'sstv';
 
 // The server still speaks in fm / nfm / am; map the RF demodulator onto it.
 const serverModeFor = (mode, demod) => {
   if (mode !== 'rf') return mode;
   if (demod === 'fm') return 'fm';
-  if (demod === 'nfm') return 'nfm';
+  if (isNfmBand(demod)) return 'nfm';
   return 'am';
 };
 // Map a server mode (+ demod) back to the RF demodulator (null for non-RF).
 const demodForServer = (serverMode, serverDemod) => {
   if (serverMode === 'fm') return 'fm';
-  if (serverMode === 'nfm') return 'nfm';
+  if (serverMode === 'nfm') return serverDemod === 'sstv' ? 'sstv' : 'nfm';
   if (serverMode === 'am') return serverDemod || 'am';
   return null;
 };
@@ -171,6 +175,12 @@ export default function App() {
   const [knobAngle, setKnobAngle] = useState(0);
   const [cwText, setCwText] = useState('');
   const [rttyText, setRttyText] = useState('');
+  const [sstvType, setSstvType] = useState('auto');
+  const [sstvFrame, setSstvFrame] = useState(null);
+  const [sstvModeName, setSstvModeName] = useState(null);
+  // True while the RF section was reached by tuning an SSTV Sats downlink, so
+  // the SSTV tracker stays mounted (state preserved) and a Back button shows.
+  const [sstvReturn, setSstvReturn] = useState(false);
 
   const wsRef = useRef(null);
   const playerRef = useRef(null);
@@ -201,7 +211,7 @@ export default function App() {
           ? adsbFreq
           : d === 'fm'
             ? freq
-            : d === 'nfm'
+            : isNfmBand(d)
               ? nfmFreq
               : hfFreq;
 
@@ -481,6 +491,9 @@ export default function App() {
               setCwText(msg.text || '');
             } else if (msg.type === 'rtty') {
               setRttyText(msg.text || '');
+            } else if (msg.type === 'sstv') {
+              setSstvModeName(msg.mode || null);
+              if (msg.clear) setSstvFrame(null);
             } else if (msg.type === 'info') {
              setStatus(msg.message);
           } else if (msg.type === 'slide') {
@@ -550,6 +563,11 @@ export default function App() {
           } else if (kind === 2) {
             const nb = bytes[1] | (bytes[2] << 8);
             spectrumRef.current && spectrumRef.current.push(bytes.subarray(3, 3 + nb));
+          } else if (kind === 3) {
+            const width = bytes[1] | (bytes[2] << 8);
+            const height = bytes[3] | (bytes[4] << 8);
+            const pixels = bytes.slice(5, 5 + width * height * 4);
+            setSstvFrame({ width, height, pixels });
           }
         }
       };
@@ -590,7 +608,7 @@ export default function App() {
         port: parseInt(port, 10),
         gain: gain.trim() === '' ? undefined : Number(gain),
         squelch: demod === 'nfm' ? squelch : 0,
-        demod: 'am',
+        demod,
       });
        player.start();
       playingRef.current = true;
@@ -757,8 +775,9 @@ export default function App() {
         gain: gain.trim() === '' ? undefined : Number(gain),
         service: m === 'dab' ? dabServiceNow || undefined : undefined,
         squelch: m === 'rf' && dem === 'nfm' ? squelch : 0,
-        demod: serverMode === 'am' ? dem : 'am',
+        demod: dem,
       });
+       if (m === 'rf' && dem === 'sstv') send({ op: 'sstvMode', mode: sstvType });
        if (player) player.start();
       playingRef.current = true;
       setPlaying(true);
@@ -768,6 +787,7 @@ export default function App() {
        if (m === 'meshtastic') setMeshtasticPackets([]);
        if (m === 'adsb') setAdsbAircraft([]);
        if (m === 'rf' && serverMode === 'am') { setCwText(''); setRttyText(''); }
+       if (m === 'rf' && serverMode === 'nfm') { setSstvFrame(null); setSstvModeName(null); }
        if (m === 'dab') setDabServices([]);
        if (spectrumRef.current) spectrumRef.current.clear();
     } catch (err) {
@@ -788,6 +808,7 @@ export default function App() {
     setStatus('Stopped');
     setDabInfo(null);
     setDabSlide(null);
+    setSstvFrame(null);
     if (spectrumRef.current) spectrumRef.current.clear();
   };
 
@@ -801,7 +822,7 @@ export default function App() {
       freq: Math.round(parseFloat(mhz) * 1e6),
       service: service || undefined,
       squelch: m2 === 'rf' && dem2 === 'nfm' ? squelch : 0,
-      demod: serverMode === 'am' ? dem2 : 'am',
+      demod: dem2,
     });
     if (m2 === 'dab') {
       setDabInfo(null);
@@ -812,6 +833,7 @@ export default function App() {
       if (spectrumRef.current) spectrumRef.current.clear();
     }
     if (m2 === 'rf' && serverMode === 'am') { setCwText(''); setRttyText(''); }
+    if (m2 === 'rf' && dem2 === 'sstv' && clear) { setSstvFrame(null); setSstvModeName(null); }
   };
   tuneFreqRef.current = tuneFreq;
 
@@ -848,6 +870,8 @@ export default function App() {
     setMode(m);
     setCwText('');
     setRttyText('');
+    // Leaving the RF section clears the "back to SSTV Sats" shortcut.
+    if (m !== 'rf') setSstvReturn(false);
     // SSTV Sats is a tracking-only mode: it neither loads an RF station list
     // nor retunes the SDR.
     if (m === 'sstv') return;
@@ -863,11 +887,21 @@ export default function App() {
   // to RF/NFM and tune the SDR to the given frequency (Hz).
   const tuneSstvDownlink = (freqHz) => {
     const mhz = (Number(freqHz) / 1e6).toFixed(4);
+    // Tuning a satellite downlink lands in the RF section with the SSTV
+    // demodulator selected, keeping the tracker mounted so its state survives.
+    setSstvReturn(true);
     setMode('rf');
-    setDemod('nfm');
+    setDemod('sstv');
     setNfmFreq(mhz);
-    loadPresets('nfm');
-    play(mhz, 'rf', undefined, 'nfm');
+    loadPresets('sstv');
+    setSstvFrame(null);
+    setSstvModeName(null);
+    play(mhz, 'rf', undefined, 'sstv');
+  };
+
+  const backToSstv = () => {
+    setSstvReturn(false);
+    setMode('sstv');
   };
 
   const changeNfmFreq = (e) => {
@@ -891,6 +925,9 @@ export default function App() {
     setDemod(d);
     setCwText('');
     setRttyText('');
+    setSstvFrame(null);
+    setSstvModeName(null);
+    send({ op: 'sstvMode', mode: sstvType });
     loadPresets(d);
     if (playingRef.current) {
       tuneFreq(freqFor('rf', d), 'rf', undefined, { demod: d });
@@ -922,6 +959,14 @@ export default function App() {
   const changeVolume = (e) => {
     setVolume(Number(e.target.value));
     if (playerRef.current) playerRef.current.setVolume(Number(e.target.value));
+  };
+
+  const changeSstvType = (e) => {
+    const v = e.target.value;
+    setSstvType(v);
+    send({ op: 'sstvMode', mode: v });
+    setSstvFrame(null);
+    setSstvModeName(null);
   };
 
   const addPreset = () => {
@@ -956,7 +1001,7 @@ export default function App() {
       setMode('rf');
       setDemod(m);
       if (m === 'fm') setFreq(p.freq);
-      else if (m === 'nfm') setNfmFreq(p.freq);
+      else if (isNfmBand(m)) setNfmFreq(p.freq);
       else setHfFreq(p.freq);
       loadPresets(m);
       if (playingRef.current) tuneFreq(p.freq, 'rf', undefined, { demod: m });
@@ -989,15 +1034,15 @@ export default function App() {
     const handleTune = (ticks) => {
       const { mode: m, demod: d, tuneStep: step, nfmFreq: nf, hfFreq: hf } = fineRef.current;
       if (m !== 'rf' || d === 'fm') return;
-      const cur = d === 'nfm' ? nf : hf;
+      const cur = isNfmBand(d) ? nf : hf;
       const hz = Math.round(parseFloat(cur) * 1e6);
-      // NFM spans up to 1 GHz; the HF demods span 0-30 MHz.
-      const maxHz = d === 'nfm' ? 1_000_000_000 : 30_000_000;
+      // NFM (and SSTV) span up to 1 GHz; the HF demods span 0-30 MHz.
+      const maxHz = isNfmBand(d) ? 1_000_000_000 : 30_000_000;
       const next = Math.max(0, Math.min(maxHz, hz - ticks * step));
       const s = (next / 1e6).toFixed(4);
-      if (d === 'nfm') {
+      if (isNfmBand(d)) {
         setNfmFreq(s);
-        if (playingRef.current && tuneFreqRef.current) tuneFreqRef.current(s, 'rf', undefined, { clear: false, demod: 'nfm' });
+        if (playingRef.current && tuneFreqRef.current) tuneFreqRef.current(s, 'rf', undefined, { clear: false, demod: d });
       } else {
         setHfFreq(s);
         if (playingRef.current && tuneFreqRef.current) tuneFreqRef.current(s, 'rf', undefined, { clear: false, demod: d });
@@ -1167,9 +1212,19 @@ export default function App() {
         <option value="sstv">SSTV Sats</option>
       </select>
 
-      {mode === 'sstv' ? (
-        <SstvTracker user={user} onTuneDownlink={tuneSstvDownlink} />
-      ) : (
+      {(mode === 'sstv' || sstvReturn) && (
+        <div className={mode === 'sstv' ? '' : 'sstv-tracker-off'}>
+          <SstvTracker user={user} onTuneDownlink={tuneSstvDownlink} visible={mode === 'sstv'} />
+        </div>
+      )}
+
+      {mode === 'rf' && sstvReturn && (
+        <button className="back-to-sstv" onClick={backToSstv}>
+          ← Back to SSTV Sats
+        </button>
+      )}
+
+      {mode !== 'sstv' && (
       <div className="columns">
         <div className="col col-left">
           <div className="row">
@@ -1207,21 +1262,21 @@ export default function App() {
                     mode === 'meshtastic' ? meshtasticFreq
                     : mode === 'adsb' ? adsbFreq
                     : demod === 'fm' ? freq
-                    : demod === 'nfm' ? nfmFreq
+                    : isNfmBand(demod) ? nfmFreq
                     : hfFreq
                   }
                   onChange={
                     mode === 'meshtastic' ? changeMeshtasticFreq
                     : mode === 'adsb' ? changeAdsbFreq
                     : demod === 'fm' ? changeFreq
-                    : demod === 'nfm' ? changeNfmFreq
+                    : isNfmBand(demod) ? changeNfmFreq
                     : changeHfFreq
                   }
                   placeholder={
                     mode === 'meshtastic' ? '869.525'
                     : mode === 'adsb' ? '1090.000'
                     : demod === 'fm' ? '95.1'
-                    : demod === 'nfm' ? '145.000'
+                    : isNfmBand(demod) ? '145.000'
                     : '0.000 – 30.000'
                   }
                   inputMode="decimal"
@@ -1243,6 +1298,16 @@ export default function App() {
                       {squelch === 0 ? 'Off' : `${Math.round(squelch * 5)}`}
                     </span>
                   </div>
+                </label>
+              )}
+              {mode === 'rf' && demod === 'sstv' && (
+                <label>
+                  SSTV mode
+                  <select value={sstvType} onChange={changeSstvType}>
+                    <option value="auto">Auto (from VIS)</option>
+                    <option value="robot36">Robot 36</option>
+                    <option value="pd120">PD 120</option>
+                  </select>
                 </label>
               )}
               {mode === 'meshtastic' && (
@@ -1630,6 +1695,10 @@ export default function App() {
               <Meter label="Signal" value={stats.signal} />
               <Meter label="Audio" value={stats.audio} />
             </div>
+          )}
+
+          {mode === 'rf' && demod === 'sstv' && (
+            <SstvImage frame={sstvFrame} mode={sstvModeName} />
           )}
 
           {mode === 'rf' && demod === 'cw' && cwText && (

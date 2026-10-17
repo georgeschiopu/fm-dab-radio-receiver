@@ -87,6 +87,20 @@ manager.on('packet', (packet) => broadcast({ type: 'meshtastic', packet }));
 manager.on('aircraft', (aircraft) => broadcast({ type: 'adsb', aircraft }));
 manager.on('cw', (text) => broadcast({ type: 'cw', text }));
 manager.on('rtty', (text) => broadcast({ type: 'rtty', text }));
+manager.on('sstvMode', (mode) => broadcast({ type: 'sstv', mode }));
+manager.on('sstvFrame', (frame) => {
+  if (!frame) {
+    broadcast({ type: 'sstv', mode: null, clear: true });
+    return;
+  }
+  const { pixels, width, height } = frame;
+  const data = Buffer.allocUnsafe(5 + pixels.length);
+  data[0] = 0x03; // SSTV RGBA frame
+  data.writeUInt16LE(width, 1);
+  data.writeUInt16LE(height, 3);
+  Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength).copy(data, 5);
+  sendBinary(data);
+});
 
 // MOT slideshow covers written by dablin -> broadcast to clients as base64.
 const slides = new SlideWatcher();
@@ -313,6 +327,8 @@ wss.on('connection', (ws, req) => {
       if (Number.isFinite(level)) manager.setSquelch(level);
     } else if (msg.op === 'demod') {
       manager.setDemod(String(msg.demod || 'am'));
+    } else if (msg.op === 'sstvMode') {
+      manager.setSstvMode(String(msg.mode || 'auto'));
     } else if (msg.op === 'meshtasticKey') {
       if (manager.mode === 'meshtastic') {
         try {

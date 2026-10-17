@@ -9,6 +9,7 @@ import { channelBlockForFreq, channelFreqKHz, DabReceiver } from './dab.js';
 import { AudioStreamManager, scanThresholdFor } from './audioStream.js';
 import { CwDecoder, MORSE } from './cw.js';
 import { RttyDecoder, ITA2_LTRS, ITA2_FIGS } from './rtty.js';
+import { SstvDecoder } from './sstv.js';
 import { parseMeshtasticPacket, resolveMeshtasticKey } from './meshtastic.js';
 import { parseSbsLine, AdsbTracker } from './adsb.js';
 import { imageSizeOfFile } from './fmLogos.js';
@@ -826,6 +827,123 @@ describe('RTTY decoder', () => {
   });
 });
 
+describe('SSTV decoder', () => {
+  const FS = 48_000;
+  const byteToFreq = (b) => 1500 + (800 * b) / 255;
+
+  function tone(out, freq, msec, state) {
+    const n = Math.round((msec / 1000) * FS);
+    const inc = (2 * Math.PI * freq) / FS;
+    for (let i = 0; i < n; i++) {
+      state.phase += inc;
+      out.push(Math.sin(state.phase));
+    }
+  }
+
+  function vis(out, code, state) {
+    tone(out, 1900, 300, state);
+    tone(out, 1200, 10, state);
+    tone(out, 1900, 300, state);
+    tone(out, 1200, 30, state); // start bit
+    let ones = 0;
+    for (let i = 0; i < 7; i++) {
+      const bit = (code >> i) & 1;
+      ones += bit;
+      tone(out, bit ? 1100 : 1300, 30, state);
+    }
+    tone(out, ones % 2 ? 1100 : 1300, 30, state); // parity
+    tone(out, 1200, 30, state); // stop bit
+  }
+
+  function encodeRobot36(y, cb, cr) {
+    const out = [];
+    const state = { phase: 0 };
+    vis(out, 8, state);
+    for (let line = 0; line < 240; line++) {
+      tone(out, 1200, 9, state);
+      tone(out, 1500, 3, state);
+      for (let x = 0; x < 320; x++) tone(out, byteToFreq(y), 88 / 320, state);
+      tone(out, line % 2 === 0 ? 1500 : 2300, 4.5, state);
+      tone(out, 1900, 1.5, state);
+      const c = line % 2 === 0 ? cr : cb;
+      for (let x = 0; x < 320; x++) tone(out, byteToFreq(c), 44 / 320, state);
+    }
+    return Float32Array.from(out);
+  }
+
+  function encodePd120(y, cb, cr) {
+    const out = [];
+    const state = { phase: 0 };
+    vis(out, 95, state);
+    for (let p = 0; p < 248; p++) {
+      tone(out, 1200, 20, state);
+      tone(out, 1500, 2.08, state);
+      for (let x = 0; x < 640; x++) tone(out, byteToFreq(y), 0.19, state);
+      for (let x = 0; x < 640; x++) tone(out, byteToFreq(cb), 0.19, state);
+      for (let x = 0; x < 640; x++) tone(out, byteToFreq(cr), 0.19, state);
+      for (let x = 0; x < 640; x++) tone(out, byteToFreq(y), 0.19, state);
+    }
+    return Float32Array.from(out);
+  }
+
+  function decode(samples, mode = 'auto') {
+    const frames = [];
+    const dec = new SstvDecoder({ sampleRate: FS, mode, onFrame: (f) => frames.push(f) });
+    // A little lead-in silence so the discriminator settles before the header.
+    const audio = new Float32Array(Math.round(0.05 * FS) + samples.length);
+    audio.set(samples, Math.round(0.05 * FS));
+    for (let i = 0; i < audio.length; i += 4096) {
+      dec.push(audio.subarray(i, Math.min(i + 4096, audio.length)));
+    }
+    return frames;
+  }
+
+  const rgbAt = (frame, x, y) => {
+    const o = (y * frame.width + x) * 4;
+    return [frame.pixels[o], frame.pixels[o + 1], frame.pixels[o + 2]];
+  };
+
+  const expectNear = (got, want, tol) => expect(Math.abs(got - want)).toBeLessThanOrEqual(tol);
+
+  it('decodes a Robot 36 frame from the VIS header', () => {
+    const frames = decode(encodeRobot36(180, 90, 160));
+    expect(frames.length).toBeGreaterThan(0);
+    const frame = frames[frames.length - 1];
+    expect(frame.width).toBe(320);
+    expect(frame.height).toBe(240);
+    // Y=180, Cb=90, Cr=160 -> approx R225 G170 B113 (solid colour image).
+    const [r, g, b] = rgbAt(frame, 160, 120);
+    expectNear(r, 225, 10);
+    expectNear(g, 170, 10);
+    expectNear(b, 113, 10);
+  });
+
+  it('decodes a PD 120 frame from the VIS header', () => {
+    const frames = decode(encodePd120(180, 90, 160));
+    expect(frames.length).toBeGreaterThan(0);
+    const frame = frames[frames.length - 1];
+    expect(frame.width).toBe(640);
+    expect(frame.height).toBe(496);
+    const [r, g, b] = rgbAt(frame, 320, 240);
+    expectNear(r, 225, 12);
+    expectNear(g, 170, 12);
+    expectNear(b, 113, 12);
+  });
+
+  it('honours a forced mode when no VIS match is requested', () => {
+    const frames = decode(encodeRobot36(0, 128, 128), 'robot36');
+    expect(frames.at(-1).height).toBe(240);
+    const [r] = rgbAt(frames.at(-1), 160, 120);
+    expectNear(r, 0, 10);
+  });
+
+  it('does not emit a frame for random noise', () => {
+    const noise = new Float32Array(3 * FS).map(() => (Math.random() - 0.5) * 0.5);
+    const frames = decode(noise);
+    expect(frames.length).toBe(0);
+  });
+});
+
 describe('HF demodulator selection', () => {
   it('switches AM/USB/LSB/CW/RTTY without reconnecting and preserves the channel offset', () => {
     const mgr = new AudioStreamManager();
@@ -852,11 +970,13 @@ describe('HF demodulator selection', () => {
     expect(mgr.demod).toBe('rtty');
     expect(mgr.decoder).toBeInstanceOf(SsbDecoder);
 
-    // Non-HF modes ignore demodulator switching.
+    // NFM only has the SSTV sub-demodulator; anything else stays plain NFM.
     mgr.mode = 'nfm';
     mgr.demod = 'am';
     mgr.setDemod('usb');
-    expect(mgr.demod).toBe('am');
+    expect(mgr.demod).toBe('nfm');
+    mgr.setDemod('sstv');
+    expect(mgr.demod).toBe('sstv');
   });
 });
 

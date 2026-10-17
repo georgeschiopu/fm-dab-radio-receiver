@@ -64,6 +64,26 @@ const flagOf = (cc) => {
   return s.length === 2 ? String.fromCodePoint(...[...s].map((c) => 127397 + c.charCodeAt(0))) : '';
 };
 
+const REGION_NAMES =
+  typeof Intl !== 'undefined' && Intl.DisplayNames
+    ? new Intl.DisplayNames(['en'], { type: 'region' })
+    : null;
+
+// Turn "RU,US" into "Russia, United States" for the flag tooltip.
+const countryNamesOf = (cc) =>
+  String(cc || '')
+    .split(',')
+    .map((c) => c.trim().toUpperCase().slice(0, 2))
+    .filter((c) => c.length === 2)
+    .map((c) => {
+      try {
+        return (REGION_NAMES && REGION_NAMES.of(c)) || c;
+      } catch {
+        return c;
+      }
+    })
+    .join(', ');
+
 function Recenter({ lat, lon, zoom, active }) {
   const map = useMap();
   useEffect(() => {
@@ -82,7 +102,19 @@ function FitBounds({ bounds }) {
   return null;
 }
 
-export default function SstvTracker({ user, onTuneDownlink }) {
+// The tracker can be kept mounted (hidden) while the RF section is shown so its
+// state survives; Leaflet needs a size refresh when it becomes visible again.
+function MapResize({ visible }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!visible) return undefined;
+    const t = setTimeout(() => map.invalidateSize && map.invalidateSize(), 120);
+    return () => clearTimeout(t);
+  }, [visible, map]);
+  return null;
+}
+
+export default function SstvTracker({ user, onTuneDownlink, visible = true }) {
   const [catalog, setCatalog] = useState([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState('');
@@ -101,9 +133,10 @@ export default function SstvTracker({ user, onTuneDownlink }) {
   const [tracking, setTracking] = useState(false);
   const [live, setLive] = useState([]);
   const [tracks, setTracks] = useState({});
+  const [footprintNorad, setFootprintNorad] = useState(null);
 
   const [passDays, setPassDays] = useState(5);
-  const [minEl, setMinEl] = useState(0);
+  const [minEl, setMinEl] = useState(50);
   const [passes, setPasses] = useState(null);
   const [passLoading, setPassLoading] = useState(false);
   const [plotted, setPlotted] = useState(null);
@@ -283,6 +316,7 @@ export default function SstvTracker({ user, onTuneDownlink }) {
   const toggleSelected = (norad) => {
     const n = Number(norad);
     setSelected((prev) => (prev.includes(n) ? prev.filter((x) => x !== n) : [...prev, n]));
+    setFootprintNorad((cur) => (cur === n ? null : cur));
   };
 
   const selectAll = () => setSelected(filtered.map((s) => s.norad));
@@ -304,6 +338,7 @@ export default function SstvTracker({ user, onTuneDownlink }) {
 
   const stopTracking = () => {
     setTracking(false);
+    setFootprintNorad(null);
     setStatus('Idle');
   };
 
@@ -451,7 +486,12 @@ export default function SstvTracker({ user, onTuneDownlink }) {
                     <input type="checkbox" checked={selected.includes(s.norad)} onChange={() => toggleSelected(s.norad)} />
                     <span className="sstv-meta">
                       <span className="sstv-name">
-                        {s.name} {flagOf(s.countries) && <span className="sstv-flag">{flagOf(s.countries)}</span>}
+                        {s.name}{' '}
+                        {flagOf(s.countries) && (
+                          <span className="sstv-flag" title={countryNamesOf(s.countries)}>
+                            {flagOf(s.countries)}
+                          </span>
+                        )}
                       </span>
                       <span className="sstv-sub">
                         NORAD {s.norad}
@@ -534,6 +574,7 @@ export default function SstvTracker({ user, onTuneDownlink }) {
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               />
+              <MapResize visible={visible} />
               <Recenter
                 lat={location ? location.lat : NaN}
                 lon={location ? location.lng : NaN}
@@ -550,14 +591,16 @@ export default function SstvTracker({ user, onTuneDownlink }) {
                 plotted.segments.map((seg, i) => (
                   <Polyline key={`p-${i}`} positions={seg} pathOptions={{ color: colorFor(plotted.norad), weight: 3, opacity: 0.95 }} />
                 ))}
-              {live.map((r) => (
-                <Circle
-                  key={`f-${r.norad}`}
-                  center={[r.lat, r.lng]}
-                  radius={r.footprint * 1000}
-                  pathOptions={{ color: colorFor(r.norad), fillColor: colorFor(r.norad), fillOpacity: 0.1, weight: 1 }}
-                />
-              ))}
+              {live
+                .filter((r) => r.norad === footprintNorad)
+                .map((r) => (
+                  <Circle
+                    key={`f-${r.norad}`}
+                    center={[r.lat, r.lng]}
+                    radius={r.footprint * 1000}
+                    pathOptions={{ color: colorFor(r.norad), fillColor: colorFor(r.norad), fillOpacity: 0.1, weight: 1 }}
+                  />
+                ))}
               {live.map((r) => (
                 <CircleMarker
                   key={`m-${r.norad}`}
@@ -575,6 +618,7 @@ export default function SstvTracker({ user, onTuneDownlink }) {
               )}
             </MapContainer>
           </div>
+          <p className="sstv-hint">Click a satellite name below to show its ground footprint.</p>
           <div className="sstv-table-wrap">
             <table className="sstv-table">
               <thead>
@@ -606,8 +650,15 @@ export default function SstvTracker({ user, onTuneDownlink }) {
                   return (
                     <tr key={r.norad}>
                       <td>
-                        <span className="sstv-dot" style={{ background: colorFor(r.norad) }} />
-                        {satById(r.norad)?.name || r.norad}
+                        <button
+                          type="button"
+                          className={`sstv-sat-link${r.norad === footprintNorad ? ' active' : ''}`}
+                          title={r.norad === footprintNorad ? 'Hide footprint' : 'Show footprint'}
+                          onClick={() => setFootprintNorad((cur) => (cur === r.norad ? null : r.norad))}
+                        >
+                          <span className="sstv-dot" style={{ background: colorFor(r.norad) }} />
+                          {satById(r.norad)?.name || r.norad}
+                        </button>
                       </td>
                       <td className="num">{r.az != null ? `${fmt(r.az, 1)}° ${compass(r.az)}` : '—'}</td>
                       <td className="num">{r.el != null ? `${fmt(r.el, 1)}°` : '—'}</td>
