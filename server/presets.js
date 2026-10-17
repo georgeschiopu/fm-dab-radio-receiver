@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 // RF demodulators are stored as their own buckets (the preset's `mode` is the
 // demodulator), plus the standalone DAB / Meshtastic / ADS-B modes.
-const MODES = ['fm', 'nfm', 'am', 'usb', 'lsb', 'cw', 'rtty', 'dab', 'meshtastic', 'adsb'];
+const MODES = ['fm', 'nfm', 'am', 'usb', 'lsb', 'cw', 'rtty', 'sstv', 'dab', 'meshtastic', 'adsb'];
 // Old records kept every HF preset under 'am' with a `demod` field; these are
 // split out into their own buckets on load.
 const RF_DEMODS = ['usb', 'lsb', 'cw', 'rtty'];

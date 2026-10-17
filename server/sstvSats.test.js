@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   parseSstvSatellites,
   parseTleEntry,
@@ -136,6 +139,30 @@ describe('SstvCatalog', () => {
     const catalog = new SstvCatalog({ fetchImpl });
     const tles = await catalog.getTles([25544]);
     expect(tles[25544].tle1.startsWith('1 25544')).toBe(true);
+  });
+
+  it('persists TLEs to disk and reuses them after a restart', async () => {
+    const cacheFile = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'sstv-cache-')),
+      'tles.json'
+    );
+    const fetchImpl = async (url) => {
+      if (url.startsWith(`${DB_BASE}/tle/`)) return okJson([tle]);
+      throw new Error(`unexpected ${url}`);
+    };
+    const first = new SstvCatalog({ fetchImpl, cacheFile });
+    const tles = await first.getTles([25544]);
+    expect(tles[25544].tle1.startsWith('1 25544')).toBe(true);
+    expect(fs.existsSync(cacheFile)).toBe(true);
+
+    // A fresh instance (e.g. after a container restart) reads the disk cache and
+    // never touches the network.
+    const offline = async () => {
+      throw new Error('should not fetch');
+    };
+    const restarted = new SstvCatalog({ fetchImpl: offline, cacheFile });
+    const reused = await restarted.getTles([25544]);
+    expect(reused[25544].tle1.startsWith('1 25544')).toBe(true);
   });
 
   it('falls back to Celestrak when SatNOGS has no TLE', async () => {

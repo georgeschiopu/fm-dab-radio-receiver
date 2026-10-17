@@ -1,22 +1,24 @@
-# FM / NFM / HF (AM · SSB · CW) / DAB / Meshtastic / ADS-B / SSTV Sats Radio Receiver
+# FM / NFM / HF (AM · SSB · CW · RTTY) / DAB / Meshtastic / ADS-B / SSTV / SSTV Sats Radio Receiver
 
-A lightweight web-based radio receiver for **broadcast FM**, **narrowband FM (NFM)** for amateur radio, **HF** (0–30 MHz) with **AM / USB / LSB / CW** demodulators, **DAB/DAB+** (digital radio), **Meshtastic** LoRa and **ADS-B** aircraft, fed by a remote [rtl_tcp](https://github.com/keenerd/rtl-sdr-blog) SDR server. A built-in **SSTV Sats** mode tracks amateur satellites that broadcast SSTV with a live map, ground footprints and pass predictions.
+A lightweight web-based radio receiver for **broadcast FM**, **narrowband FM (NFM)** for amateur radio, **HF** (0–30 MHz) with **AM / USB / LSB / CW / RTTY** demodulators, an **SSTV** image decoder (Robot 36 / PD 120), **DAB/DAB+** (digital radio), **Meshtastic** LoRa and **ADS-B** aircraft, fed by a remote [rtl_tcp](https://github.com/keenerd/rtl-sdr-blog) SDR server. A built-in **SSTV Sats** mode tracks amateur satellites that broadcast SSTV with a live map, ground footprints and pass predictions.
 
-The Node.js backend demodulates FM/NFM/HF IQ samples in-process and decodes DAB via an `eti-cmdline-rtl_tcp | dablin` pipeline; Meshtastic and ADS-B are decoded by `lorarx` and `dump1090` child processes. A small React client streams live audio and shows a spectrum analyzer (FM), a waterfall centered on the tuned frequency (NFM/HF), the current DAB ensemble/service, Meshtastic telemetry, the ADS-B aircraft map/table, or the SSTV satellite tracker.
+The Node.js backend demodulates FM/NFM/HF IQ samples in-process (and decodes SSTV images from the NFM audio) and decodes DAB via an `eti-cmdline-rtl_tcp | dablin` pipeline; Meshtastic and ADS-B are decoded by `lorarx` and `dump1090` child processes. A small React client streams live audio and shows a spectrum analyzer (FM), a waterfall centered on the tuned frequency (NFM/HF), the decoded SSTV image, the current DAB ensemble/service, Meshtastic telemetry, the ADS-B aircraft map/table, or the SSTV satellite tracker.
 
 ## Features
 
 - **FM mode** — in-process FFT-based FM demodulator (288 kHz sample rate), signal + audio meters, live spectrum analyzer.
 - **NFM mode** — narrowband FM for amateur bands: 1 MS/s rtl_tcp so the **±0.5 MHz waterfall** (centered on the tuned frequency) shows adjacent activity. In-process NFM demod (4 kHz voice bandwidth) with **AGC** for a steady level and a manual **Squelch** slider (off by default, NFM-only) that mutes the noise floor when no carrier is locked.
-- **HF mode** — the 0–30 MHz band (e.g. 40 m, via a 125 MHz upconverter), sharing the 1 MS/s **±0.5 MHz waterfall** as NFM. Four **demodulator buttons** (AM, USB, LSB, CW) sit above the saved-stations panel and switch the demodulator for the tuned frequency without retuning the SDR; each saved station remembers its own demodulator. Tune to `f + 125 MHz` (upconverter LO) when using a Ham It Up-style converter.
+- **HF mode** — the 0–30 MHz band (e.g. 40 m, via a 125 MHz upconverter), sharing the 1 MS/s **±0.5 MHz waterfall** as NFM. The **demodulator buttons** (FM, NFM, AM, USB, LSB, CW, RTTY, SSTV) sit above the saved-stations panel and switch the demodulator for the tuned frequency without retuning the SDR; each saved station remembers its own demodulator. Tune to `f + 125 MHz` (upconverter LO) when using a Ham It Up-style converter.
   - **AM** — in-process envelope-detector demod (√(I²+Q²)) with a DC blocker, 5 kHz audio bandwidth, **AGC** for a steady level.
   - **USB / LSB** — single-sideband demod via a complex band-pass that mixes the wanted sideband to baseband, rejects the image, and restores the audio pitch (also **AGC**).
   - **CW** — the SSB (USB) demodulator feeding a **morse decoder** that detects keyed tone on/off (concentration-based, robust to AGC), times dots/dashes against an adaptive dot length, and displays the decoded text **on the waterfall**.
+  - **RTTY** — the USB SSB demodulator feeding a 45.45-baud ITA2 decoder (auto-detecting mark/space tones and polarity) that shows the decoded text in its panel.
+  - **SSTV** — decodes the NFM audio of an SSTV transmission (Robot 36 and PD 120, the two modes most common on amateur satellites) into a **live colour image** below the signal/audio meters, with a **Save as JPEG** button. Pick a mode or let it auto-detect from the VIS header; its frequencies are saved in their own per-demod list.
 - **Meshtastic mode** — EU868 LoRa packet demodulation at 869.525 MHz using `lorarx`, with text messages, node positions, and device/environment telemetry. The built-in default key and encrypted per-account custom PSKs are supported.
 - **ADS-B mode** — 1090 MHz ADS-B / Mode S decoding via `dump1090` (fed from the same rtl_tcp IQ stream). Detected aircraft appear on an interactive **Leaflet + OpenStreetMap** map centred on `HOME_LAT`/`HOME_LON` (with a `25–200 km` range selector) plus a rich table: ICAO (linked to ADS-B Exchange), callsign, country flag, thumbnail photo, registration, type, operator, airborne/ground status (✓/✗), altitude, speed, track, squawk, position and age. Registration/type/operator/photo are enriched from the free [adsbdb](https://adsbdb.com), and the table is enriched with **ADS-B Exchange** links and start/register sorting (desc → asc → stop). Aircraft not heard for **10 minutes** are dropped. When the receiver hasn't decoded a position, it's fetched from the keyless **OpenSky Network** so the table/map have no empty fields.
 - **DAB mode** — full ETI decode chain (`eti-cmdline-rtl_tcp` → `dablin`) producing 48 kHz audio; live ensemble name, playing service and SNR on a DAB channel selector (5A–13F), plus a **Station dropdown** to pick a specific service from the tuned ensemble (or "first station found").
-- **SSTV Sats mode** — a satellite tracker (ported from the [amsat-tracker](https://github.com/georgeschiopu/amsat-tracker) project) for the amateur satellites that broadcast **SSTV**. The satellite list is built from the [SatNOGS DB](https://db.satnogs.org) API (every transmitter whose downlink mode is SSTV), fetched through the backend and cached with an offline snapshot fallback. Enter or geolocate your **home position**, pick the birds you care about, watch them live on an OpenStreetMap map with their **ground footprints** and a ±45 min **ground track**, read az/el/alt/range in a live table, and pull **local pass predictions** (1–10 days, min-elevation filter, grouped by day). TLEs come from the SatNOGS DB (Celestrak as backup) and orbits are propagated in the browser with SGP4, so no API key is needed. Each listed downlink has a **Tune** button that switches the receiver to NFM and retunes the SDR to that satellite's SSTV frequency.
-- **Presets** — save/load stations in the browser (localStorage), kept **separately per mode**. DAB presets remember both the channel and the selected station, so clicking one tunes the ensemble and plays that service (`dablin -l`). HF presets remember the **demodulator** used on that frequency (AM/USB/LSB/CW), so clicking one tunes it and selects the matching demod. FM/NFM/HF presets show a station logo when available: the backend lazily looks each saved station up in the free [radio-browser.info](https://www.radio-browser.info) community database (by name + frequency, GB-first), downloads the favicon to `server/logos/fm/`, and caches the result. No API key needed; downloaded logos are gitignored.
+- **SSTV Sats mode** — a satellite tracker (ported from the [amsat-tracker](https://github.com/georgeschiopu/amsat-tracker) project) for the amateur satellites that broadcast **SSTV**. The satellite list is built from the [SatNOGS DB](https://db.satnogs.org) API (every transmitter whose downlink mode is SSTV), fetched through the backend and cached with an offline snapshot fallback. Enter or geolocate your **home position**, pick the birds you care about (a country flag tooltip shows each satellite's country), watch them live on an OpenStreetMap map with their ±45 min **ground tracks**, read az/el/alt/range in a live table, and pull **local pass predictions** (defaults to 5 days and 50° minimum elevation, grouped by day). Each tracked satellite's **ground footprint** is drawn on click of its name in the live table (clicking another hides the current one). TLEs come from the SatNOGS DB (Celestrak as backup), are **cached to disk for 12 hours** so restarts don't re-download them, and orbits are propagated in the browser with SGP4, so no API key is needed. Each listed downlink has a **Tune** button that switches the receiver to the **RF/SSTV** demodulator and retunes the SDR to that frequency, keeping the tracker's state (so a **Back to SSTV Sats** button returns you to where you left off).
+- **Presets** — save/load stations in the browser (localStorage), kept **separately per mode**. DAB presets remember both the channel and the selected station, so clicking one tunes the ensemble and plays that service (`dablin -l`). HF presets remember the **demodulator** used on that frequency (AM/USB/LSB/CW/RTTY/SSTV), so clicking one tunes it and selects the matching demod. FM/NFM/HF presets show a station logo when available: the backend lazily looks each saved station up in the free [radio-browser.info](https://www.radio-browser.info) community database (by name + frequency, GB-first), downloads the favicon to `server/logos/fm/`, and caches the result. No API key needed; downloaded logos are gitignored.
 - **Remote SDR** — works with any `rtl_tcp` server on your network (or localhost).
 
 ## Prerequisites
@@ -65,11 +67,12 @@ All options are environment variables (see `docker-compose.yml`):
 | `HOME_LAT` / `HOME_LON` | _(unset)_ | Fixed map centre for ADS-B (decimal degrees); if unset the map tracks the heard fleet centroid |
 | `ADSB_SBS_PORT` | `10001`    | Local TCP port dump1090 emits SBS-1 aircraft on    |
 | `ADSB_BIN` | `dump1090` | Override the dump1090 binary path                  |
+| `SSTV_CACHE_FILE` | `data/sstv-tle-cache.json` | On-disk cache of SatNOGS SSTV TLEs (12 h TTL; point it at a volume to survive rebuilds) |
 | `PORT`             | `8080`       | Web UI port                                             |
 
 > ADS-B enrichment calls [adsbdb](https://adsbdb.com) and the [OpenSky Network](https://opensky-network.org) from the **browser** (both free/keyless), so the client machine needs internet for the aircraft photos/metadata and OpenSky position fill.
 
-> **SSTV Sats** fetches its satellite catalogue and TLEs from [db.satnogs.org](https://db.satnogs.org) (falling back to [Celestrak](https://celestrak.org) for TLEs) through the **backend**, so the container needs outbound HTTPS. If SatNOGS is unreachable, a baked-in snapshot of the SSTV satellite list (`server/sstvSatsFallback.js`) is served instead. No API key is required.
+> **SSTV Sats** fetches its satellite catalogue and TLEs from [db.satnogs.org](https://db.satnogs.org) (falling back to [Celestrak](https://celestrak.org) for TLEs) through the **backend**, so the container needs outbound HTTPS. TLEs (and the full TLE index) are cached to disk for **12 h** (`SSTV_CACHE_FILE`), so a restart reuses them instead of re-downloading; the catalogue list is cached in memory for 6 h. If SatNOGS is unreachable, a baked-in snapshot of the SSTV satellite list (`server/sstvSatsFallback.js`) is served instead. No API key is required.
 
 Example with a DAB default:
 
@@ -109,7 +112,7 @@ sudo apt install dablin                # ETI -> PCM decoder
 npm test
 ```
 
-Runs offline unit tests against a fake rtl_tcp server (protocol + FM/NFM/AM demod + SSB (USB/LSB) + CW morse decoding + AGC/squelch + resampler + spectrum + DAB channel map + Meshtastic parsing + ADS-B SBS-1 parsing + preset demod persistence + SSTV satellite/TLE parsing and SGP4 astronomy).
+Runs offline unit tests against a fake rtl_tcp server (protocol + FM/NFM/AM demod + SSB (USB/LSB) + CW morse decoding + RTTY ITA2 + AGC/squelch + resampler + spectrum + DAB channel map + Meshtastic parsing + ADS-B SBS-1 parsing + preset demod persistence + SSTV Robot 36 / PD 120 decoding + SSTV satellite/TLE parsing/caching and SGP4 astronomy).
 
 ## How it works
 
@@ -119,23 +122,24 @@ Runs offline unit tests against a fake rtl_tcp server (protocol + FM/NFM/AM demo
 - **Meshtastic**: the backend pipes raw 1 MS/s unsigned IQ into `lorarx` with EU868 Meshtastic settings (250 kHz bandwidth, SF7–SF11), decrypts the JSON packet payload with the selected account key, and decodes text, position, node info, and telemetry protobuf fields.
 - **DAB**: the backend runs `eti-cmdline-rtl_tcp -H host -C <channel>` (rtl_tcp at 2.048 MS/s) and pipes ETI frames into `dablin` (PCM to stdout), which emits the audio at the service's native rate/format (48/32/24 kHz, mono/stereo, float32 or int16); the server downmixes to mono int16 and the client plays it at the reported rate. `-l <label>` selects a specific station from the ensemble's FIC listing.
 - **ADS-B**: the backend pipes raw 2 MS/s unsigned IQ into `dump1090 --ifile -` (all other listeners disabled), reads its SBS-1 output over a local TCP port, and keeps a rolling list of aircraft (10-minute TTL, also tracking first-seen time). The frontend enriches each aircraft from adsbdb (registration/type/operator/photo), fills any position the receiver missed from OpenSky, links to ADS-B Exchange, and lets you sort the ICAO and Age columns.
-- **SSTV Sats**: the backend serves the SSTV satellite list (SatNOGS DB `transmitters?mode=5`, joined with satellite names, cached for 6 h) and TLEs (SatNOGS DB TLE endpoint, cached per-NORAD, Celestrak fallback). The React tracker stores your home position locally, propagates the selected satellites with SGP4 (`assets`-free vendored `satellite.js`) to draw sub-satellite points, footprints and ground tracks on a Leaflet map, and scans the elevation to compute pass rise/max/set times locally. Clicking a downlink's **Tune** button switches the receiver to RF/NFM and tunes the SDR to that frequency.
+- **SSTV**: the NFM audio is fed to a decoder that recovers the instantaneous tone frequency with a quadrature (I/Q) FM discriminator, detects the 30 ms **VIS header** (leader / break / bits / parity) to find the frame start and identify the mode, then samples each pixel (1500 Hz = black · 2300 Hz = white) with per-line sync alignment. **Robot 36** (Y + alternating Cr/Cb) and **PD 120** (two lines per period with shared Cb/Cr) are supported; finished/partial rasters are streamed to the browser as binary `0x03` RGBA frames and drawn on a canvas, with a **Save as JPEG** export.
+- **SSTV Sats**: the backend serves the SSTV satellite list (SatNOGS DB `transmitters?mode=5`, joined with satellite names, cached in memory for 6 h) and TLEs (SatNOGS DB TLE endpoint, cached per-NORAD for 12 h and persisted to disk, Celestrak fallback). The React tracker stores your home position locally, propagates the selected satellites with SGP4 (`assets`-free vendored `satellite.js`) to draw sub-satellite points, on-click footprints and ground tracks on a Leaflet map, and scans the elevation to compute pass rise/max/set times locally. Clicking a downlink's **Tune** button switches the receiver to RF/SSTV and tunes the SDR to that frequency while keeping the tracker mounted (state preserved) so a **Back to SSTV Sats** button returns to it.
 - The client uses a Web Audio `AudioContext` at 48 kHz for gapless playback and renders spectrum/waterfall lines on a canvas.
 
 ### WebSocket protocol
 
-- Text `status` messages carry `mode`, `connected`, `freq`, `signal`, `audio`, `squelch`, the HF `demod` (AM/USB/LSB/CW), and DAB fields (`channel`, `service`, `ensemble`, `snr`). Meshtastic packets use `{type: "meshtastic", packet}` messages; ADS-B aircraft use `{type: "adsb", aircraft: [...]}`, where each aircraft has `icao`, optional `callsign`/`altitude`/`speed`/`track`/`lat`/`lon`/`verticalRate`/`squawk`/`alert`/`emergency`/`spi`/`onGround`, plus `age` (seconds since last message) and `addedAge` (seconds since first heard). CW decoding broadcasts `{type: "cw", text}` with the decoded (rolling) morse text.
-- Client → server text ops: `tune` (mode, frequency, gain, optional HF `demod`, DAB `service` and NFM `squelch`), `demod` (switch the HF demodulator), `gain`, `squelch`, `meshtasticKey`, `stop`.
-- Binary frames: `0x01` = PCM int16 LE (mono 48 kHz), `0x02` = spectrum dB line (`uint16 LE` length prefix).
+- Text `status` messages carry `mode`, `connected`, `freq`, `signal`, `audio`, `squelch`, the HF `demod` (AM/USB/LSB/CW/RTTY, or `sstv` in NFM), and DAB fields (`channel`, `service`, `ensemble`, `snr`). Meshtastic packets use `{type: "meshtastic", packet}` messages; ADS-B aircraft use `{type: "adsb", aircraft: [...]}`, where each aircraft has `icao`, optional `callsign`/`altitude`/`speed`/`track`/`lat`/`lon`/`verticalRate`/`squawk`/`alert`/`emergency`/`spi`/`onGround`, plus `age` (seconds since last message) and `addedAge` (seconds since first heard). CW broadcasts `{type: "cw", text}` and RTTY broadcasts `{type: "rtty", text}` with the decoded (rolling) text. SSTV broadcasts `{type: "sstv", mode}` when a VIS header identifies a mode (and `{type: "sstv", mode: null, clear: true}` when the decoder resets).
+- Client → server text ops: `tune` (mode, frequency, gain, optional `demod`, DAB `service` and NFM `squelch`), `demod` (switch the HF/NFM sub-demodulator), `sstvMode` (`auto` / `robot36` / `pd120`), `gain`, `squelch`, `meshtasticKey`, `stop`.
+- Binary frames: `0x01` = PCM int16 LE (mono 48 kHz), `0x02` = spectrum dB line (`uint16 LE` length prefix), `0x03` = SSTV frame (`uint16 LE` width, `uint16 LE` height, then RGBA bytes).
 
-SSTV Sats uses two authenticated REST endpoints instead of the socket: `GET /api/sstv/satellites` returns the SatNOGS-derived SSTV catalogue, and `GET /api/sstv/tle?norads=…` returns TLEs for the requested NORAD ids.
+SSTV Sats uses two authenticated REST endpoints instead of the socket: `GET /api/sstv/satellites` returns the SatNOGS-derived SSTV catalogue, and `GET /api/sstv/tle?norads=…` returns TLEs for the requested NORAD ids (served from a 12 h on-disk cache when fresh).
 
 ## Project layout
 
 ```
 server/
   index.js        Express + WebSocket server, protocol handling
-  audioStream.js  mode-aware stream manager (FM / NFM / HF / DAB), HF demodulator switching
+  audioStream.js  mode-aware stream manager (FM / NFM / HF / DAB), demodulator switching, SSTV feed
   dab.js          DAB pipeline: eti-cmdline-rtl_tcp | dablin, channel map
   meshtastic.js   LoRa packet parsing, decryption, and Meshtastic protobuf fields
   meshtasticReceiver.js  lorarx child-process stream adapter
@@ -143,6 +147,7 @@ server/
   adsbReceiver.js dump1090 child-process stream adapter (reads rtl_tcp IQ, SBS-1 out)
   sstvSats.js     SSTV satellite catalogue + TLE lookup (SatNOGS DB, Celestrak fallback)
   sstvSatsFallback.js  Offline snapshot of the SatNOGS SSTV satellite list
+  sstv.js         SSTV image decoder (FM discriminator, VIS header, Robot 36 / PD 120)
   userSettings.js account-scoped encrypted Meshtastic key settings
   cw.js           CW (morse) decoder: Goertzel tone detection + adaptive timing
   dsp.js          FM/NFM/AM/SSB (USB/LSB) demodulators (AGC, squelch, 50k->48k resampler)
@@ -156,6 +161,7 @@ client/
   src/icaoCountry.js  ICAO 24-bit address -> country flag mapping
   src/adsbEnrich.js   adsbdb enrichment + OpenSky position fill
   src/SstvTracker.jsx SSTV satellite tracker (map, live tracking, pass predictions)
+  src/SstvImage.jsx   live SSTV decoder image canvas + JPEG export
   src/sstvOrbit.js    SGP4 propagation + pass prediction helpers (satellite.js)
   src/vendor/satellite.cjs  Vendored satellite.js (SGP4)
   src/audio.js        Web Audio playback

@@ -1,6 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+
+// The SSTV Sats tracker drags in Leaflet, which needs real layout; stub it so
+// the RF redirect/back wiring can be exercised. `visible` reflects whether the
+// tracker is on screen (it stays mounted, hidden, while RF is shown).
+vi.mock('./SstvTracker.jsx', () => ({
+  default: ({ onTuneDownlink, visible }) => (
+    <div data-testid="sstv-tracker" data-visible={String(visible)}>
+      <button onClick={() => onTuneDownlink(145800000)}>Tune ISS</button>
+    </div>
+  ),
+}));
+
 import App from './App.jsx';
 
 // @vitest-environment jsdom
@@ -459,7 +471,48 @@ describe('App', () => {
     expect(screen.getByText('CQ DE TEST')).toBeInTheDocument();
   });
 
-  it('groups FM/NFM/AM/USB/LSB/CW/RTTY under the RF mode', async () => {
+  it('offers an SSTV demodulator with a mode picker and image panel', async () => {
+    const user = userEvent.setup();
+    const fetchMock = authenticatedFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    render(<App />);
+    await screen.findByText('Stations');
+
+    await selectDemod(user, 'SSTV');
+    // SSTV has its own saved-station bucket like the other demodulators.
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url]) => url === '/api/presets?mode=sstv')).toBe(true)
+    );
+    expect(screen.getByText('SSTV mode')).toBeInTheDocument();
+    expect(screen.getByText('SSTV image')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save as JPEG' })).toBeDisabled();
+  });
+
+  it('tunes an SSTV Sats downlink into RF/SSTV and preserves the tracker', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', authenticatedFetch());
+    render(<App />);
+    await screen.findByText('Stations');
+
+    const modeSelect = screen.getByRole('combobox', { name: 'Receiver mode' });
+    await user.selectOptions(modeSelect, 'sstv');
+    expect(await screen.findByTestId('sstv-tracker')).toHaveAttribute('data-visible', 'true');
+
+    await user.click(screen.getByRole('button', { name: 'Tune ISS' }));
+
+    // Lands in RF with the SSTV demodulator selected; the tracker stays mounted
+    // (just hidden) so its state is not lost.
+    expect(screen.getByRole('button', { name: 'SSTV' }).className).toContain('active');
+    expect(screen.getByTestId('sstv-tracker')).toHaveAttribute('data-visible', 'false');
+    const ws = MockWebSocket.instances[0];
+    await waitFor(() => expect(ws.sent.some((m) => m.op === 'tune' && m.demod === 'sstv')).toBe(true));
+
+    // Back returns to the preserved SSTV Sats screen.
+    await user.click(screen.getByRole('button', { name: /Back to SSTV/ }));
+    expect(screen.getByTestId('sstv-tracker')).toHaveAttribute('data-visible', 'true');
+  });
+
+  it('groups FM/NFM/AM/USB/LSB/CW/RTTY/SSTV under the RF mode', async () => {
     vi.stubGlobal('fetch', authenticatedFetch());
     const { container } = render(<App />);
     await screen.findByText('Stations');
@@ -468,7 +521,7 @@ describe('App', () => {
     expect([...modeSelect.options].map((o) => o.value)).toEqual(['rf', 'dab', 'meshtastic', 'adsb', 'sstv']);
 
     const buttons = [...container.querySelectorAll('.demod-buttons .demod-button')].map((b) => b.textContent);
-    expect(buttons).toEqual(['FM', 'NFM', 'AM', 'USB', 'LSB', 'CW', 'RTTY']);
+    expect(buttons).toEqual(['FM', 'NFM', 'AM', 'USB', 'LSB', 'CW', 'RTTY', 'SSTV']);
   });
 
   it('loads the station list for the selected demodulator', async () => {

@@ -6,17 +6,31 @@
 // as a backup. Orbits are propagated locally on the client with SGP4, so the
 // tracker needs no API key. If SatNOGS is unreachable the baked-in snapshot in
 // sstvSatsFallback.js is served instead.
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { SSTV_FALLBACK } from './sstvSatsFallback.js';
 
 export const SSTV_MODE_ID = 5;
 export const DB_BASE = 'https://db.satnogs.org/api';
 export const CELESTRAK_BASE = 'https://celestrak.org/NORAD/elements/gp.php';
 
+// The satellite list changes slowly; 6 h is plenty. TLEs are refreshed by the
+// providers a few times a day, so a 12 h TTL catches essentially every update
+// while keeping upstream traffic to ~2 fetches/day per satellite. The full TLE
+// index (a large catalogue download) is cached and persisted for the same 12 h.
 const LIST_TTL_MS = 6 * 60 * 60 * 1000;
-const TLE_TTL_MS = 2 * 60 * 60 * 1000;
-const TLE_INDEX_TTL_MS = 90 * 60 * 1000;
+const TLE_TTL_MS = 12 * 60 * 60 * 1000;
+const TLE_INDEX_TTL_MS = 12 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 15_000;
 const TLE_INDEX_THRESHOLD = 8;
+
+const DEFAULT_CACHE_FILE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'data',
+  'sstv-tle-cache.json'
+);
 
 const USER_AGENT = 'fm-dab-radio-receiver';
 
@@ -119,16 +133,63 @@ export class SstvCatalog {
     now = () => Date.now(),
     listTtlMs = LIST_TTL_MS,
     tleTtlMs = TLE_TTL_MS,
+    tleIndexTtlMs = TLE_INDEX_TTL_MS,
+    cacheFile = null,
   } = {}) {
     this.fetch = fetchImpl || globalThis.fetch;
     this.now = now;
     this.listTtlMs = listTtlMs;
     this.tleTtlMs = tleTtlMs;
+    this.tleIndexTtlMs = tleIndexTtlMs;
+    this.cacheFile = cacheFile;
     this._list = null;
     this._listAt = 0;
     this._tleIndex = null;
     this._tleIndexAt = 0;
     this._tles = new Map();
+    this._loadCache();
+  }
+
+  // TLEs are persisted to disk so a container restart (or server reboot) reuses
+  // them instead of re-downloading every satellite's orbital elements. The
+  // `at` timestamps travel with the data, so the TTL still applies on reload.
+  _loadCache() {
+    if (!this.cacheFile) return;
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.cacheFile, 'utf8'));
+      for (const [norad, entry] of Object.entries(raw.tles || {})) {
+        if (entry && entry.data && Number.isFinite(entry.at)) {
+          this._tles.set(Number(norad), entry);
+        }
+      }
+      if (raw.index && raw.index.entries && Number.isFinite(raw.index.at)) {
+        this._tleIndex = new Map(
+          Object.entries(raw.index.entries).map(([n, e]) => [Number(n), e])
+        );
+        this._tleIndexAt = raw.index.at;
+      }
+    } catch {
+      /* no cache yet / unreadable: start empty */
+    }
+  }
+
+  _saveCache() {
+    if (!this.cacheFile) return;
+    try {
+      const tles = {};
+      for (const [norad, entry] of this._tles) tles[norad] = entry;
+      const payload = {
+        tles,
+        index:
+          this._tleIndex && this._tleIndexAt
+            ? { entries: Object.fromEntries(this._tleIndex), at: this._tleIndexAt }
+            : null,
+      };
+      fs.mkdirSync(path.dirname(this.cacheFile), { recursive: true });
+      fs.writeFileSync(this.cacheFile, JSON.stringify(payload));
+    } catch {
+      /* caching is best-effort; never fail a request over it */
+    }
   }
 
   async fetchJson(url) {
@@ -211,7 +272,7 @@ export class SstvCatalog {
   }
 
   async ensureTleIndex() {
-    if (this._tleIndex && this.now() - this._tleIndexAt < TLE_INDEX_TTL_MS) {
+    if (this._tleIndex && this.now() - this._tleIndexAt < this.tleIndexTtlMs) {
       return this._tleIndex;
     }
     const entries = await this.fetchCollection(`${DB_BASE}/tle/?format=json`);
@@ -222,6 +283,7 @@ export class SstvCatalog {
     }
     this._tleIndex = index;
     this._tleIndexAt = this.now();
+    this._saveCache();
     return index;
   }
 
@@ -267,16 +329,21 @@ export class SstvCatalog {
       }
     }
 
+    let learned = false;
     for (const n of missing) {
       let entry = index ? index.get(n) : null;
       if (!entry) entry = await this.fetchSingleTle(n);
       if (entry) {
         this._tles.set(n, { data: entry, at: this.now() });
         out[n] = entry;
+        learned = true;
       }
     }
+    if (learned) this._saveCache();
     return out;
   }
 }
 
-export const sstvCatalog = new SstvCatalog();
+export const sstvCatalog = new SstvCatalog({
+  cacheFile: process.env.SSTV_CACHE_FILE || DEFAULT_CACHE_FILE,
+});

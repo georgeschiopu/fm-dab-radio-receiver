@@ -24,6 +24,8 @@ services:
       - PRESETS_FILE=/data/presets.json
       - USERS_FILE=/data/users.json
       - USER_SETTINGS_FILE=/data/user-settings.json
+      # Cached SatNOGS SSTV TLEs survive container rebuilds via the volume.
+      - SSTV_CACHE_FILE=/data/sstv-tle-cache.json
     volumes:
       # Data stored on the NAS (kept through rebuilds; renamed save file stays at /data).
       - /mnt/nas/docker-volumes/fm-dab-radio-receiver_sdr-presets:/data

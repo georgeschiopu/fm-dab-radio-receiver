@@ -78,11 +78,16 @@ afterEach(() => {
 
 describe('SstvTracker', () => {
   it('renders the SSTV satellite list from the API', async () => {
-    render(<SstvTracker user="alice" onTuneDownlink={() => {}} />);
+    const { container } = render(<SstvTracker user="alice" onTuneDownlink={() => {}} />);
     expect(await screen.findByText('ISS')).toBeInTheDocument();
     expect(screen.getByText('UmKA-1')).toBeInTheDocument();
     expect(screen.getByTestId('sstv-map')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start' })).toBeInTheDocument();
+    // The flag emoji carries the country name as a hover tooltip.
+    const flag = container.querySelector('.sstv-flag');
+    expect(flag).toBeInTheDocument();
+    expect(flag.getAttribute('title')).toContain('Russia');
+    expect(flag.getAttribute('title')).toContain('United States');
   });
 
   it('shows the downlinks and tunes the SDR on demand', async () => {
@@ -97,6 +102,27 @@ describe('SstvTracker', () => {
 
     await user.click(screen.getAllByRole('button', { name: 'Tune' })[0]);
     expect(onTune).toHaveBeenCalledWith(145800000);
+  });
+
+  it('toggles the ground footprint when a satellite name is clicked', async () => {
+    const user = userEvent.setup();
+    render(<SstvTracker user="alice" onTuneDownlink={() => {}} />);
+    await screen.findByText('ISS');
+
+    await user.click(screen.getByRole('checkbox', { name: /ISS/ }));
+    await user.type(screen.getByPlaceholderText('51.5074'), '51.5');
+    await user.type(screen.getByPlaceholderText('-0.1278'), '-0.12');
+    await user.click(screen.getByRole('button', { name: 'Save location' }));
+    await user.click(screen.getByRole('button', { name: 'Start' }));
+
+    const satButton = await screen.findByRole('button', { name: /ISS/ }, { timeout: 3000 });
+    expect(satButton).toHaveAttribute('title', 'Show footprint');
+
+    await user.click(satButton);
+    expect(satButton).toHaveAttribute('title', 'Hide footprint');
+
+    await user.click(satButton);
+    expect(satButton).toHaveAttribute('title', 'Show footprint');
   });
 
   it('persists the satellite selection per user', async () => {
